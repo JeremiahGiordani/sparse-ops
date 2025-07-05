@@ -1,0 +1,7 @@
+env/
+build/
+data/
+.vscode/
+*.pyc
+*.so
+*.pt
