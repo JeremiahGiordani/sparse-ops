@@ -2,6 +2,9 @@
 
 set -e  # Exit immediately on error
 
+export CPPFLAGS="-I/opt/homebrew/opt/libomp/include"
+export LDFLAGS="-L/opt/homebrew/opt/libomp/lib"
+
 echo "🧹 Cleaning previous build..."
 rm -rf build
 mkdir -p build
