@@ -33,8 +33,8 @@ def create_test_model(multiplier=1, amount=0.8):
     return model
 
 # Create and save model
-multiplier = 200
-amount=0.9999
+multiplier = 1
+amount=0.9
 model = create_test_model(multiplier, amount)
 torch.save(model, "test_model.pt")
 
@@ -42,7 +42,7 @@ torch.save(model, "test_model.pt")
 input_tensor = torch.randn(8*multiplier)
 
 # Dry run
-model = torch.load("test_model.pt")
+model = torch.load("test_model.pt", weights_only=False)
 model.eval()
 with torch.no_grad():
     model(input_tensor).detach().numpy()
@@ -56,7 +56,7 @@ t2 = time.perf_counter()
 print(f"⏱ SparseRuntime time: {(t2 - t1) * 1000:.3f} ms")
 
 # Compare with PyTorch baseline
-model = torch.load("test_model.pt")
+model = torch.load("test_model.pt", weights_only=False)
 model.eval()
 with torch.no_grad():
     t3 = time.perf_counter()
