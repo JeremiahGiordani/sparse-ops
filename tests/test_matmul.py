@@ -1,63 +1,89 @@
-# test_matmul.py
+#!/usr/bin/env python3
+# test_matmul_avg.py
+#
+# Measure average runtime of several matrix-vector multiplications
+# over N_RUNS iterations.
 
-import torch
-import numpy as np
-import scipy.sparse
 import time
-from python.cpp_backend import run_sparse_matvec
+import numpy as np
+import scipy.sparse as sp
+import torch
+
+from python.cpp_backend import run_matvec
 from python.utils import to_csr
 
-# Generate a random dense weight matrix with sparsity
-input_dim = 5120
-output_dim = 2560
-sparsity = 0.1
+# ----------------------------------------------------------------------
+# Experiment parameters
+# ----------------------------------------------------------------------
+INPUT_DIM  = 512
+OUTPUT_DIM = 256
+SPARSITY   = 0.9
+N_RUNS     = 1_000      # <-- number of repetitions
+SEED       = 42
+# ----------------------------------------------------------------------
 
-np.random.seed(42)
-torch.manual_seed(42)
+# ----------------------------------------------------------------------
+# Data generation (identical to original script)
+# ----------------------------------------------------------------------
+np.random.seed(SEED)
+torch.manual_seed(SEED)
 
-# Create sparse matrix
-weight = np.random.randn(output_dim, input_dim).astype(np.float32)
-mask = np.random.rand(*weight.shape) > sparsity
+weight = np.random.randn(OUTPUT_DIM, INPUT_DIM).astype(np.float32)
+mask   = np.random.rand(*weight.shape) > SPARSITY
 weight *= mask
 
-bias = np.random.randn(output_dim).astype(np.float32)
-input_vec = np.random.randn(input_dim).astype(np.float32)
+bias       = np.random.randn(OUTPUT_DIM).astype(np.float32)
+input_vec  = np.random.randn(INPUT_DIM).astype(np.float32)
 
-# Convert to PyTorch
-weight_torch = torch.tensor(weight)
-bias_torch = torch.tensor(bias)
-input_torch = torch.tensor(input_vec)
+weight_t   = torch.tensor(weight)
+bias_t     = torch.tensor(bias)
+input_t    = torch.tensor(input_vec)
 
-print("=== Verifying correctness and measuring runtime ===")
+csr_mat    = sp.csr_matrix(weight)            # build once
+_, _, _    = to_csr(torch.tensor(weight))     # pre-compute CSR pieces if needed
 
-# --- Torch Dense ---
-t1 = time.perf_counter()
-output_torch = torch.matmul(weight_torch, input_torch) + bias_torch
-t2 = time.perf_counter()
-print(f"[PyTorch] Time: {(t2 - t1)*1000:.3f} ms")
+# ----------------------------------------------------------------------
+# Utility: average wall-time over n runs
+# ----------------------------------------------------------------------
+def timed_avg(fn, n=N_RUNS):
+    total = 0.0
+    for _ in range(n):
+        t0 = time.perf_counter()
+        fn()
+        t1 = time.perf_counter()
+        total += (t1 - t0)
+    return total / n   # seconds
 
-# --- NumPy Dense ---
-t1 = time.perf_counter()
-output_numpy = weight @ input_vec + bias
-t2 = time.perf_counter()
-print(f"[NumPy] Time: {(t2 - t1)*1000:.3f} ms")
+# ----------------------------------------------------------------------
+# Define callables we want to benchmark
+# ----------------------------------------------------------------------
+def torch_run():
+    return torch.matmul(weight_t, input_t) + bias_t
 
-# --- SciPy Sparse ---
-csr = scipy.sparse.csr_matrix(weight)
-t1 = time.perf_counter()
-output_scipy = csr.dot(input_vec) + bias
-t2 = time.perf_counter()
-print(f"[SciPy Sparse] Time: {(t2 - t1)*1000:.3f} ms")
+def numpy_run():
+    return weight @ input_vec + bias
 
-# --- Custom Kernel ---
-values, indices, indptr = to_csr(torch.tensor(weight))
-t1 = time.perf_counter()
-output_custom = run_sparse_matvec(torch.tensor(weight), torch.tensor(bias), torch.tensor(input_vec))
-t2 = time.perf_counter()
-print(f"[Custom Kernel] Time: {(t2 - t1)*1000:.3f} ms")
+def scipy_run():
+    return csr_mat.dot(input_vec) + bias
 
-# --- Check correctness ---
-print("\nChecking correctness:")
-print("Torch vs NumPy:", np.allclose(output_torch.numpy(), output_numpy, atol=1e-4))
-print("Torch vs SciPy:", np.allclose(output_torch.numpy(), output_scipy, atol=1e-4))
-print("Torch vs Custom:", np.allclose(output_torch.numpy(), output_custom.numpy(), atol=1e-4))
+def custom_run():
+    return run_matvec(weight_t, bias_t, input_t)
+
+# ----------------------------------------------------------------------
+# Correctness check (one-shot)
+# ----------------------------------------------------------------------
+print("=== Verifying correctness ===")
+out_torch  = torch_run().numpy()
+print("Torch vs NumPy :", np.allclose(out_torch, numpy_run(), atol=1e-4))
+print("Torch vs SciPy :", np.allclose(out_torch, scipy_run(), atol=1e-4))
+print("Torch vs Custom:", np.allclose(out_torch, custom_run().numpy(), atol=1e-4))
+print()
+
+# ----------------------------------------------------------------------
+# Benchmark
+# ----------------------------------------------------------------------
+print(f"=== Average runtime over {N_RUNS:,} runs ===")
+print(f"[PyTorch]      {timed_avg(torch_run)*1000:.3f} ms")
+print(f"[NumPy]        {timed_avg(numpy_run)*1000:.3f} ms")
+print(f"[SciPy Sparse] {timed_avg(scipy_run)*1000:.3f} ms")
+print(f"[Custom]       {timed_avg(custom_run)*1000:.3f} ms")

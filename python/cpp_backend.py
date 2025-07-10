@@ -1,49 +1,24 @@
-import ctypes
+import importlib
 import numpy as np
 import platform
+import torch
 from pathlib import Path
 
-from typing import TYPE_CHECKING
-import torch
+# Import the new pybind11 backend
+sparseops_backend = importlib.import_module("sparseops_backend")
 
-# Determine platform-specific shared library name
-libname = "libultrasparse.dylib" if platform.system() == "Darwin" else "libultrasparse.so"
-lib_path = Path(__file__).parent.parent / "build" / libname
-
-# Load the shared library
-lib = ctypes.CDLL(str(lib_path))
-
-# Define argument and return types
-lib.sparse_matvec.argtypes = [
-    np.ctypeslib.ndpointer(ctypes.c_float, flags="C_CONTIGUOUS"),  # input
-    ctypes.c_int,
-    np.ctypeslib.ndpointer(ctypes.c_float, flags="C_CONTIGUOUS"),  # values
-    np.ctypeslib.ndpointer(ctypes.c_int32, flags="C_CONTIGUOUS"),  # indices
-    np.ctypeslib.ndpointer(ctypes.c_int32, flags="C_CONTIGUOUS"),  # indptr
-    ctypes.c_int,
-    np.ctypeslib.ndpointer(ctypes.c_float, flags="C_CONTIGUOUS"),  # bias
-    np.ctypeslib.ndpointer(ctypes.c_float, flags="C_CONTIGUOUS")   # output
-]
-lib.sparse_matvec.restype = None
-
-def run_sparse_matvec(weight: torch.Tensor, bias: torch.Tensor, input_tensor: torch.Tensor) -> torch.Tensor:
-    import torch  # Local import to avoid circular dependency
-    from .utils import to_csr
-
-    values, indices, indptr = to_csr(weight)
-    input_np = input_tensor.detach().numpy().astype(np.float32)
-    bias_np = bias.detach().numpy().astype(np.float32)
-    output_np = np.zeros(bias_np.shape, dtype=np.float32)
-
-    lib.sparse_matvec(
-        input_np,
-        input_np.shape[0],
-        values.astype(np.float32),
-        indices.astype(np.int32),
-        indptr.astype(np.int32),
-        bias_np.shape[0],
-        bias_np,
-        output_np
-    )
-
-    return torch.from_numpy(output_np)
+def run_matvec(weight: torch.Tensor, bias: torch.Tensor, input_tensor: torch.Tensor) -> torch.Tensor:
+    """
+    Dense matrix-vector multiplication with bias using the C++ backend.
+    Args:
+        weight: (M, K) torch.Tensor
+        bias: (M,) torch.Tensor
+        input_tensor: (K,) torch.Tensor
+    Returns:
+        (M,) torch.Tensor
+    """
+    A = weight.detach().cpu().numpy().astype(np.float32)
+    x = input_tensor.detach().cpu().numpy().astype(np.float32)
+    b = bias.detach().cpu().numpy().astype(np.float32)
+    y = sparseops_backend.run_matvec(A, x, b)
+    return torch.from_numpy(np.array(y))
