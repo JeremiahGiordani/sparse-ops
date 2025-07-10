@@ -39,6 +39,10 @@ weight_t   = torch.tensor(weight)
 bias_t     = torch.tensor(bias)
 input_t    = torch.tensor(input_vec)
 
+weight_np = weight_t.detach().cpu().numpy().astype(np.float32)
+bias_np   = bias_t.detach().cpu().numpy().astype(np.float32)
+input_np  = input_t.detach().cpu().numpy().astype(np.float32)
+
 csr_mat    = sp.csr_matrix(weight)            # build once
 _, _, _    = to_csr(torch.tensor(weight))     # pre-compute CSR pieces if needed
 
@@ -67,7 +71,7 @@ def scipy_run():
     return csr_mat.dot(input_vec) + bias
 
 def custom_run():
-    return run_matvec(weight_t, bias_t, input_t)
+    return run_matvec(weight_np, bias_np, input_np)
 
 # ----------------------------------------------------------------------
 # Correctness check (one-shot)
@@ -76,7 +80,7 @@ print("=== Verifying correctness ===")
 out_torch  = torch_run().numpy()
 print("Torch vs NumPy :", np.allclose(out_torch, numpy_run(), atol=1e-4))
 print("Torch vs SciPy :", np.allclose(out_torch, scipy_run(), atol=1e-4))
-print("Torch vs Custom:", np.allclose(out_torch, custom_run().numpy(), atol=1e-4))
+print("Torch vs Custom:", np.allclose(out_torch, custom_run(), atol=1e-4))
 print()
 
 # ----------------------------------------------------------------------
