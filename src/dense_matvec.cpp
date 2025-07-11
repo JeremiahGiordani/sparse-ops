@@ -1,4 +1,5 @@
 #include "dense_matvec.hpp"
+#include "kernel_manager.hpp"
 #include <cstddef>
 #include <cstring>
 #include <omp.h>
@@ -68,48 +69,14 @@ void matvec_block_avx2(const float* A, const float* x, float* y, size_t M, size_
 
 // Main matvec with autotuned blocking, bias, and prefetching
 void dense_matvec(const float* A, const float* x, const float* b, float* y, size_t M, size_t K) {
+    static KernelManager km;
     static bool use_avx512 = cpu_supports_avx512();
-    static size_t best_MC = 64, best_KC = 64;
-    static bool tuned = false;
-    if (!tuned) {
-        // Autotune MC/KC for this shape
-        double best_time = 1e9;
-        for (size_t MC : MC_CANDIDATES) {
-            for (size_t KC : KC_CANDIDATES) {
-                float* ytest = aligned_alloc_float(M);
-                double t0 = omp_get_wtime();
-                #pragma omp parallel for schedule(static)
-                for (size_t i0 = 0; i0 < M; i0 += MC) {
-                    size_t i_max = std::min(i0 + MC, M);
-                    float* Ablock = aligned_alloc_float((i_max - i0) * K);
-                    std::memcpy(Ablock, A + i0 * K, (i_max - i0) * K * sizeof(float));
-                    float* yblock = ytest + i0;
-                    if (use_avx512) matvec_block_avx512(Ablock, x, yblock, i_max - i0, K);
-                    else matvec_block_avx2(Ablock, x, yblock, i_max - i0, K);
-                    free(Ablock);
-                }
-                double t1 = omp_get_wtime();
-                if (t1 - t0 < best_time) {
-                    best_time = t1 - t0;
-                    best_MC = MC;
-                    best_KC = KC;
-                }
-                free(ytest);
-            }
-        }
-        tuned = true;
-    }
+    matvec_kernel_fn kernel = km.get_or_create(M, K, use_avx512);
     #pragma omp parallel for schedule(static)
-    for (size_t i0 = 0; i0 < M; i0 += best_MC) {
-        size_t i_max = std::min(i0 + best_MC, M);
-        float* Ablock = aligned_alloc_float((i_max - i0) * K);
-        std::memcpy(Ablock, A + i0 * K, (i_max - i0) * K * sizeof(float));
+    for (size_t i0 = 0; i0 < M; i0 += 64) {
+        size_t i_max = std::min(i0 + 64, M);
         float* yblock = y + i0;
-        // Prefetch next block
-        if (i0 + best_MC < M) prefetch_L1(A + (i0 + best_MC) * K);
-        if (use_avx512) matvec_block_avx512(Ablock, x, yblock, i_max - i0, K);
-        else matvec_block_avx2(Ablock, x, yblock, i_max - i0, K);
+        kernel(A + i0 * K, x, yblock, i_max - i0, K);
         for (size_t i = 0; i < i_max - i0; ++i) yblock[i] += b ? b[i0 + i] : 0.0f;
-        free(Ablock);
     }
 }

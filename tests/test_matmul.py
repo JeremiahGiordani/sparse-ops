@@ -1,16 +1,18 @@
 #!/usr/bin/env python3
 # test_matmul_avg.py
-#
-# Measure average runtime of several matrix-vector multiplications
-# over N_RUNS iterations.
 
+import os
 import time
 import numpy as np
 import scipy.sparse as sp
 import torch
 
+import pytaco as pt
+from pytaco import compressed, dense
+
 from python.cpp_backend import run_matvec
 from python.utils import to_csr
+
 
 # ----------------------------------------------------------------------
 # Experiment parameters
@@ -18,12 +20,11 @@ from python.utils import to_csr
 INPUT_DIM  = 512
 OUTPUT_DIM = 256
 SPARSITY   = 0.9
-N_RUNS     = 1_000      # <-- number of repetitions
+N_RUNS     = 1_000
 SEED       = 42
-# ----------------------------------------------------------------------
 
 # ----------------------------------------------------------------------
-# Data generation (identical to original script)
+# Data generation
 # ----------------------------------------------------------------------
 np.random.seed(SEED)
 torch.manual_seed(SEED)
@@ -39,12 +40,16 @@ weight_t   = torch.tensor(weight)
 bias_t     = torch.tensor(bias)
 input_t    = torch.tensor(input_vec)
 
-weight_np = weight_t.detach().cpu().numpy().astype(np.float32)
-bias_np   = bias_t.detach().cpu().numpy().astype(np.float32)
-input_np  = input_t.detach().cpu().numpy().astype(np.float32)
+weight_np = weight_t.numpy()
+bias_np   = bias_t.numpy()
+input_np  = input_t.numpy()
 
-csr_mat    = sp.csr_matrix(weight)            # build once
-_, _, _    = to_csr(torch.tensor(weight))     # pre-compute CSR pieces if needed
+csr_mat = sp.csr_matrix(weight)
+_, _, _ = to_csr(torch.tensor(weight))
+
+assert np.isfinite(input_vec).all()
+assert np.isfinite(bias_np).all()
+assert np.isfinite(csr_mat.data).all()
 
 # ----------------------------------------------------------------------
 # Utility: average wall-time over n runs
@@ -56,7 +61,7 @@ def timed_avg(fn, n=N_RUNS):
         fn()
         t1 = time.perf_counter()
         total += (t1 - t0)
-    return total / n   # seconds
+    return total / n
 
 # ----------------------------------------------------------------------
 # Define callables we want to benchmark
@@ -73,14 +78,51 @@ def scipy_run():
 def custom_run():
     return run_matvec(weight_np, bias_np, input_np)
 
+# === TACO benchmark ===
+def taco_setup():
+
+    # Define formats: CSR for sparse matrix, dense vectors
+    csr = pt.format([dense, compressed])
+    dv  = pt.format([dense])
+
+    # Create sparse matrix tensor and insert CSR data
+    A = pt.tensor(weight_np.shape, csr)
+    rows, cols = csr_mat.nonzero()
+    vals = csr_mat.data
+    for r, c, v in zip(rows, cols, vals):
+        A.insert([r, c], v)
+
+    # Dense input vector x and bias vector z
+    x = pt.from_array(input_vec)
+
+    z = pt.from_array(bias_np)
+
+    # Output vector y
+    y = pt.tensor([OUTPUT_DIM], dv)
+
+    # Declare index variables and define SpMV computation: y[i] = A[i,j]*x[j] + z[i]
+    i, j = pt.get_index_vars(2)
+    y[i] = A[i, j] * x[j] + z[i]
+
+    return A, x, z, y
+
+A_taco, x_taco, z_taco, y_taco = taco_setup()
+
+def taco_run():
+    print("Evaluating TACO tensor...")
+    y_taco.evaluate()  # if segfault happens here, it's during execution
+    print("Converting to array...")
+    return y_taco.to_array()
+
 # ----------------------------------------------------------------------
 # Correctness check (one-shot)
 # ----------------------------------------------------------------------
 print("=== Verifying correctness ===")
-out_torch  = torch_run().numpy()
+out_torch = torch_run().numpy()
 print("Torch vs NumPy :", np.allclose(out_torch, numpy_run(), atol=1e-4))
 print("Torch vs SciPy :", np.allclose(out_torch, scipy_run(), atol=1e-4))
 print("Torch vs Custom:", np.allclose(out_torch, custom_run(), atol=1e-4))
+print("Torch vs TACO  :", np.allclose(out_torch, taco_run(), atol=1e-4))
 print()
 
 # ----------------------------------------------------------------------
@@ -91,3 +133,4 @@ print(f"[PyTorch]      {timed_avg(torch_run)*1000:.3f} ms")
 print(f"[NumPy]        {timed_avg(numpy_run)*1000:.3f} ms")
 print(f"[SciPy Sparse] {timed_avg(scipy_run)*1000:.3f} ms")
 print(f"[Custom]       {timed_avg(custom_run)*1000:.3f} ms")
+print(f"[TACO]         {timed_avg(taco_run)*1000:.3f} ms")

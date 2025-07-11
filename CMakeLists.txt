@@ -12,7 +12,7 @@ add_library(ultrasparse SHARED
 )
 
 # Build Python extension module
-add_library(sparseops_backend MODULE src/bindings.cpp src/dense_matvec.cpp)
+add_library(sparseops_backend MODULE src/bindings.cpp src/dense_matvec.cpp src/kernel_manager.cpp)
 set_target_properties(sparseops_backend PROPERTIES
     PREFIX ""
     SUFFIX ".so"
@@ -22,6 +22,7 @@ set_target_properties(sparseops_backend PROPERTIES
 include_directories(${CMAKE_SOURCE_DIR}/include)
 include_directories(/scratch/network/jg0037/env/lib64/python3.9/site-packages/pybind11/include)
 include_directories(/usr/include/python3.9)
+include_directories(${CMAKE_SOURCE_DIR}/third_party/xbyak)
 # Get pybind11 include dirs from Python
 execute_process(
     COMMAND python3 -m pybind11 --includes
