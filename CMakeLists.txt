@@ -12,7 +12,7 @@ add_library(ultrasparse SHARED
 )
 
 # Build Python extension module
-add_library(sparseops_backend MODULE src/bindings.cpp src/dense_matvec.cpp)
+add_library(sparseops_backend MODULE src/bindings.cpp src/dense_matvec.cpp src/bcoo16_encoder.cpp)
 set_target_properties(sparseops_backend PROPERTIES
     PREFIX ""
     SUFFIX ".so"
@@ -47,7 +47,7 @@ else()
 endif()
 
 target_compile_options(ultrasparse PRIVATE -O3 -mavx512f -mavx512vl -mavx2 -mfma -fopenmp -falign-functions=64 -DNDEBUG)
-target_compile_options(sparseops_backend PRIVATE -O3 -mavx512f -mavx512vl -mavx2 -mfma -fopenmp -falign-functions=64 -DNDEBUG)
+target_compile_options(sparseops_backend PRIVATE -O3 -mavx512f -mavx512vl -mavx2 -mfma -fopenmp -falign-functions=64 -DNDEBUG -DPYBIND11_DETAILED_ERROR_MESSAGES)
 
 # Install rules (optional)
 install(TARGETS ultrasparse DESTINATION lib)
