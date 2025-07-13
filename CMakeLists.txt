@@ -4,6 +4,19 @@ project(ultrasparse_runtime)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# Detect AVX-512 and AVX2 support
+include(CheckCXXCompilerFlag)
+check_cxx_compiler_flag("-mavx512f" COMPILER_SUPPORTS_AVX512F)
+check_cxx_compiler_flag("-mavx2" COMPILER_SUPPORTS_AVX2)
+
+if(COMPILER_SUPPORTS_AVX512F)
+    set(AVX512_FLAGS "-mavx512f")
+endif()
+
+if(COMPILER_SUPPORTS_AVX2)
+    set(AVX2_FLAGS "-mavx2")
+endif()
+
 # Output shared library
 add_library(ultrasparse SHARED
     src/bindings.cpp
@@ -12,7 +25,7 @@ add_library(ultrasparse SHARED
 )
 
 # Build Python extension module
-add_library(sparseops_backend MODULE src/bindings.cpp src/dense_matvec.cpp src/bcoo16_encoder.cpp)
+add_library(sparseops_backend MODULE src/bindings.cpp src/dense_matvec.cpp src/bcoo16_encoder.cpp src/sparse_matvec.cpp)
 set_target_properties(sparseops_backend PROPERTIES
     PREFIX ""
     SUFFIX ".so"
@@ -46,8 +59,11 @@ else()
     target_link_libraries(sparseops_backend PRIVATE omp)
 endif()
 
-target_compile_options(ultrasparse PRIVATE -O3 -mavx512f -mavx512vl -mavx2 -mfma -fopenmp -falign-functions=64 -DNDEBUG)
-target_compile_options(sparseops_backend PRIVATE -O3 -mavx512f -mavx512vl -mavx2 -mfma -fopenmp -falign-functions=64 -DNDEBUG -DPYBIND11_DETAILED_ERROR_MESSAGES)
+target_compile_options(ultrasparse PRIVATE -O3 ${AVX512_FLAGS} ${AVX2_FLAGS} -mfma -fopenmp -falign-functions=64 -DNDEBUG)
+# target_compile_options(sparseops_backend PRIVATE -O3 ${AVX512_FLAGS} ${AVX2_FLAGS} -mfma -fopenmp -falign-functions=64 -DNDEBUG -DPYBIND11_DETAILED_ERROR_MESSAGES)
+
+target_compile_options(sparseops_backend PRIVATE -O3 ${AVX512_FLAGS} ${AVX2_FLAGS} -mfma -fopenmp -falign-functions=64 -DNDEBUG -DPYBIND11_DETAILED_ERROR_MESSAGES)
+
 
 # Install rules (optional)
 install(TARGETS ultrasparse DESTINATION lib)

@@ -1,8 +1,11 @@
 #pragma once
 
-extern "C" {
-void sparse_matvec(const float* input, int in_dim,
-                   const float* values, const int* indices, const int* indptr, int out_dim,
-                   const float* bias,
-                   float* output);
-}
+#include "bcoo16_encoder.hpp"
+#include <cstddef>
+
+void sparse_matvec_avx512(
+    const BCOO16& A,
+    const float* x,
+    const float* b,
+    float* y,
+    size_t M);

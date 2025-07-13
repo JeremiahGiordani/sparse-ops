@@ -1,39 +1,64 @@
-// bcoo16_encoder.cpp
-// Implementation of BCOO-16 encoder and decoder for sparse matrices.
-
 #include "bcoo16_encoder.hpp"
 #include <vector>
 #include <cstddef>
 #include <algorithm>
 #include <cstdint>
+#include <cassert>
 
-// Function to encode a dense matrix into BCOO-16 format
+// --- Encode dense matrix to BCOO-16 ---
 BCOO16 encode_to_bcoo16(const std::vector<std::vector<float>>& dense_matrix) {
     BCOO16 bcoo16;
+
+    bcoo16.original_num_rows = dense_matrix.size();
+    bcoo16.original_num_cols = dense_matrix.empty() ? 0 : dense_matrix[0].size();
+
     for (size_t i = 0; i < dense_matrix.size(); ++i) {
-        for (size_t j = 0; j < dense_matrix[i].size(); ++j) {
-            if (dense_matrix[i][j] != 0) {
+        size_t row_len = dense_matrix[i].size();
+        for (size_t j = 0; j < row_len; j += 16) {
+            uint16_t mask = 0;
+            for (int k = 0; k < 16 && (j + k) < row_len; ++k) {
+                if (dense_matrix[i][j + k] != 0.0f) {
+                    mask |= (1 << k);
+                }
+            }
+
+            if (mask != 0) {
                 bcoo16.row_id.push_back(i);
                 bcoo16.first_col.push_back(j);
-                bcoo16.values.push_back(dense_matrix[i][j]);
-                bcoo16.bitmask.push_back(1); // Simplified bitmask for demonstration
+                bcoo16.bitmask.push_back(mask);
+
+                for (int k = 0; k < 16 && (j + k) < row_len; ++k) {
+                    if (mask & (1 << k)) {
+                        bcoo16.values.push_back(dense_matrix[i][j + k]);
+                    }
+                }
             }
         }
     }
+
+    assert(bcoo16.values.size() == bcoo16.row_id.size() * 16);
     return bcoo16;
 }
 
-// Function to decode a BCOO-16 format back to a dense matrix
-std::vector<std::vector<float>> decode_from_bcoo16(const BCOO16& bcoo16) {
-    std::vector<std::vector<float>> dense_matrix;
-    // Determine the size of the dense matrix
-    size_t num_rows = *std::max_element(bcoo16.row_id.begin(), bcoo16.row_id.end()) + 1;
-    size_t num_cols = *std::max_element(bcoo16.first_col.begin(), bcoo16.first_col.end()) + 1;
-    dense_matrix.resize(num_rows, std::vector<float>(num_cols, 0.0f));
 
-    // Populate the dense matrix using BCOO-16 data
+std::vector<std::vector<float>> decode_from_bcoo16(const BCOO16& bcoo16) {
+    assert(bcoo16.values.size() == bcoo16.row_id.size() * 16);
+    size_t rows = bcoo16.original_num_rows;
+    size_t cols = bcoo16.original_num_cols;
+    std::vector<std::vector<float>> dense(rows, std::vector<float>(cols, 0.0f));
+
+    size_t value_index = 0;
     for (size_t i = 0; i < bcoo16.row_id.size(); ++i) {
-        dense_matrix[bcoo16.row_id[i]][bcoo16.first_col[i]] = bcoo16.values[i];
+        int row = bcoo16.row_id[i];
+        int col_start = bcoo16.first_col[i];
+        uint16_t mask = bcoo16.bitmask[i];
+
+        for (int j = 0; j < 16; ++j) {
+            if ((mask & (1 << j)) && (col_start + j) < cols) {
+                dense[row][col_start + j] = bcoo16.values[value_index++];
+            }
+        }
     }
-    return dense_matrix;
+
+    return dense;
 }

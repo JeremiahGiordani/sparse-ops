@@ -6,6 +6,7 @@
 
 #include <vector>
 #include <cstdint>
+#include <cstddef>
 
 // Structure to represent BCOO-16 format
 struct BCOO16 {
@@ -13,6 +14,10 @@ struct BCOO16 {
     std::vector<uint32_t> first_col;
     std::vector<float> values;
     std::vector<uint16_t> bitmask;
+
+    // Store original matrix shape
+    size_t original_num_rows = 0;
+    size_t original_num_cols = 0;
 };
 
 // Function prototypes
