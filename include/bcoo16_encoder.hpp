@@ -1,27 +1,25 @@
-// bcoo16_encoder.hpp
-// Header file for BCOO-16 encoder and decoder.
-
-#ifndef BCOO16_ENCODER_HPP
-#define BCOO16_ENCODER_HPP
-
+#pragma once
 #include <vector>
-#include <cstdint>
 #include <cstddef>
+#include <cstdint>
 
-// Structure to represent BCOO-16 format
-struct BCOO16 {
-    std::vector<uint32_t> row_id;
-    std::vector<uint32_t> first_col;
-    std::vector<float> values;
-    std::vector<uint16_t> bitmask;
-
-    // Store original matrix shape
-    size_t original_num_rows = 0;
-    size_t original_num_cols = 0;
+// ─────────────────────────────────────────────────────────────────────────────
+// Cache-aligned 64-B block (now defined in the header so it's a complete type)
+struct alignas(64) BCOO16Block {
+    uint32_t row_id;
+    uint32_t first_col;
+    uint16_t bitmask;
+    uint16_t _pad;          // keeps the struct 64-byte aligned
+    float    values[16];    // always 16 floats, zeros where mask bit = 0
 };
 
-// Function prototypes
-BCOO16 encode_to_bcoo16(const std::vector<std::vector<float>>& dense_matrix);
-std::vector<std::vector<float>> decode_from_bcoo16(const BCOO16& bcoo16);
+// Container for all blocks + original dims
+struct BCOO16 {
+    std::size_t original_num_rows{};
+    std::size_t original_num_cols{};
+    std::vector<BCOO16Block> blocks;   // AoS
+};
 
-#endif // BCOO16_ENCODER_HPP
+// Encoder / decoder declarations
+BCOO16 encode_to_bcoo16(const std::vector<std::vector<float>>& dense);
+std::vector<std::vector<float>> decode_from_bcoo16(const BCOO16& bcoo);
