@@ -2,38 +2,48 @@ import numpy as np
 import sparseops_backend
 from sparseops_backend import BCOO16, sparse_matvec_avx512
 
+def pad_block(active_vals, bitmask):
+    """Return a length-16 list with zeros in inactive lanes."""
+    out = [0.0] * 16
+    idx = 0
+    for lane in range(16):
+        if (bitmask >> lane) & 1:
+            out[lane] = active_vals[idx]
+            idx += 1
+    return out
+
 def test_sparse_matvec_avx512():
-    # Create a sample BCOO-16 matrix
+    # -------- build block 0 --------
+    block0_vals = pad_block([1.0, 2.0], 0b0000000000000011)
+    # -------- build block 1 --------
+    block1_vals = pad_block([3.0, 4.0], 0b0000000000000011)
+
     bcoo16 = BCOO16()
-    bcoo16.row_id = [0, 1]
-    bcoo16.first_col = [0, 2]
-    bcoo16.values = [1.0, 2.0, 3.0, 4.0]
-    bcoo16.bitmask = [0b11, 0b11]
+    bcoo16.row_id      = [0, 1]
+    bcoo16.first_col   = [0, 2]
+    bcoo16.bitmask     = [0b11, 0b11]
+    bcoo16.values      = block0_vals + block1_vals    # 32 floats!
     bcoo16.original_num_cols = 4
     bcoo16.original_num_rows = 2
 
-    # Input vector
-    x = np.array([1.0, 2.0, 3.0, 4.0], dtype=np.float32)
-    bias = np.array([0.0, 0.0], dtype=np.float32)
+    x     = np.array([1, 2, 3, 4], dtype=np.float32)
+    bias  = np.array([0.0, 0.0],  dtype=np.float32)
+    y     = np.zeros(2, dtype=np.float32)
 
-    # Expected: row 0 = 1*x[0] + 2*x[1] = 1 + 4 = 5
-    #           row 1 = 3*x[2] + 4*x[3] = 9 + 16 = 25
-    expected_y = np.array([5.0, 25.0], dtype=np.float32)
-
-    # Output
-    y = np.zeros_like(expected_y)
     sparse_matvec_avx512(bcoo16, x, bias, y)
 
-    # Check
-    assert np.allclose(y, expected_y), f"Expected {expected_y}, but got {y}"
-    print("✅ Sparse matrix-vector multiplication test passed.")
+    expected = np.array([5.0, 25.0], dtype=np.float32)
+    assert np.allclose(y, expected, atol=1e-6), f"got {y}, want {expected}"
+    print("✅ SpMV AVX-512 test passed.")
 
 def test_avx512_single_block():
     bcoo = BCOO16()
     bcoo.row_id = [0]
     bcoo.first_col = [0]
     bcoo.bitmask = [0b0101]  # indices 0 and 2
-    bcoo.values = [1.0, 2.0]  # only two values
+    block0_vals = pad_block([1.0, 2.0], 0b0000000000000101)
+    bcoo.values = block0_vals
+
     bcoo.original_num_cols = 4
     bcoo.original_num_rows = 1
 
@@ -52,7 +62,7 @@ def test_avx512_two_blocks_noncontiguous():
     bcoo.row_id = [0, 1]
     bcoo.first_col = [0, 16]
     bcoo.bitmask = [0b1001, 0b0011]  # [0, 3], [16, 17]
-    bcoo.values = [1.0, 2.0, 3.0, 4.0]  # matches active bits
+    bcoo.values = pad_block([1.0, 2.0], 0b0000000000001001) + pad_block([3.0, 4.0], 0b0000000000000011)
     bcoo.original_num_cols = 32
     bcoo.original_num_rows = 2
 
@@ -73,7 +83,7 @@ def test_avx512_zero_mask_skipped():
     bcoo.row_id = [0]
     bcoo.first_col = [0]
     bcoo.bitmask = [0b0000]  # no active elements
-    bcoo.values = []  # no values
+    bcoo.values = pad_block([], 0b0000000000000000)  # empty block
     bcoo.original_num_cols = 4
     bcoo.original_num_rows = 1
 
@@ -257,8 +267,6 @@ def test_avx512_kernel_correctness():
 
     bcoo = sparseops_backend.encode_to_bcoo16(dense)
 
-    total_expected = sum(bin(mask).count("1") for mask in bcoo.bitmask)
-    # print(f"Expected values: {total_expected}, got: {len(bcoo.values)}")
     y = np.empty(M, dtype=np.float32)
 
     sparseops_backend.sparse_matvec_avx512(bcoo, x, b, y)
@@ -304,7 +312,74 @@ def test_avx512_kernel_large():
     
     # Assert correctness
     assert np.allclose(y_sparse, y_dense, atol=1e-5), "Sparse kernel output does not match dense baseline"
+    print("✅ AVX-512 kernel large test passed.")
 
+def test_avx512_kernel_large_irregular_square():
+    """Test the sparse_matvec_avx512 function for correctness."""
+    M, K = 1001, 1001
+    dense_matrix = generate_sparse_matrix((M, K))
+    bcoo16 = BCOO16()
+    bcoo16 = sparseops_backend.encode_to_bcoo16(dense_matrix)
+    x = np.random.rand(K).astype(np.float32)
+    bias = np.random.rand(M).astype(np.float32)
+    
+    # Ensure arrays are aligned
+    x = np.require(x, requirements=['A', 'O', 'C'])
+    bias = np.require(bias, requirements=['A', 'O', 'C'])
+    y_sparse = np.require(np.empty(M, dtype=np.float32), requirements=['A', 'O', 'C'])
+    
+    # Compute using sparse kernel
+    sparse_matvec_avx512(bcoo16, x, bias, y_sparse)
+    
+    # Compute using dense baseline
+    y_dense = dense_matrix @ x + bias
+    
+    # Assert correctness
+    if not np.allclose(y_sparse, y_dense, atol=1e-5):
+        print("y_sparse:", y_sparse)
+        print("y_dense:", y_dense)
+        raise AssertionError("Sparse kernel output does not match dense baseline")
+    
+    # Compute using dense baseline
+    y_dense = dense_matrix @ x + bias
+    
+    # Assert correctness
+    assert np.allclose(y_sparse, y_dense, atol=1e-5), "Sparse kernel output does not match dense baseline"
+    print("✅ AVX-512 kernel large irregular square test passed.")
+
+
+def test_avx512_kernel_large_irregular_non_square():
+    """Test the sparse_matvec_avx512 function for correctness."""
+    M, K = 1001, 543
+    dense_matrix = generate_sparse_matrix((M, K))
+    bcoo16 = BCOO16()
+    bcoo16 = sparseops_backend.encode_to_bcoo16(dense_matrix)
+    x = np.random.rand(K).astype(np.float32)
+    bias = np.random.rand(M).astype(np.float32)
+    
+    # Ensure arrays are aligned
+    x = np.require(x, requirements=['A', 'O', 'C'])
+    bias = np.require(bias, requirements=['A', 'O', 'C'])
+    y_sparse = np.require(np.empty(M, dtype=np.float32), requirements=['A', 'O', 'C'])
+    
+    # Compute using sparse kernel
+    sparse_matvec_avx512(bcoo16, x, bias, y_sparse)
+    
+    # Compute using dense baseline
+    y_dense = dense_matrix @ x + bias
+    
+    # Assert correctness
+    if not np.allclose(y_sparse, y_dense, atol=1e-5):
+        print("y_sparse:", y_sparse)
+        print("y_dense:", y_dense)
+        raise AssertionError("Sparse kernel output does not match dense baseline")
+    
+    # Compute using dense baseline
+    y_dense = dense_matrix @ x + bias
+    
+    # Assert correctness
+    assert np.allclose(y_sparse, y_dense, atol=1e-5), "Sparse kernel output does not match dense baseline"
+    print("✅ AVX-512 kernel large irregular non-square test passed.")
 
 def generate_sparse_matrix(shape, sparsity=0.95):
     """Generate a random sparse matrix in BCOO-16 format."""
@@ -315,8 +390,8 @@ def generate_sparse_matrix(shape, sparsity=0.95):
 
 def benchmark_sparse_matvec_avx512():
     """Benchmark the sparse_matvec_avx512 function."""
-    M, K = 512, 256
-    dense_matrix = generate_sparse_matrix((M, K), sparsity=0.95)
+    M, K = 2000, 2000
+    dense_matrix = generate_sparse_matrix((M, K), sparsity=0.999999)
     bcoo16 = BCOO16()
     bcoo16 = sparseops_backend.encode_to_bcoo16(dense_matrix)
     x = np.random.rand(K).astype(np.float32)
@@ -354,6 +429,8 @@ if __name__ == "__main__":
 
     test_avx512_kernel_correctness()
     test_avx512_kernel_large()
+    test_avx512_kernel_large_irregular_square()
+    test_avx512_kernel_large_irregular_non_square()
 
     benchmark_sparse_matvec_avx512()
     print("✅ All AVX-512 kernel tests passed.")
