@@ -11,7 +11,7 @@ from pytaco import compressed, dense
 from python.cpp_backend import run_matvec
 from python.utils import to_csr
 
-from mkl_ops import mkl_dense_run
+from tests.old.mkl_ops import mkl_dense_run
 
 from sparse_dot_mkl import dot_product_mkl, mkl_set_num_threads
 
