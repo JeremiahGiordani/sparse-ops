@@ -7,7 +7,9 @@
 
 #include "dense_matvec.hpp"
 #include "bcoo16_encoder.hpp"
-#include "sparse_matvec.hpp"
+#include "sparse_matvec_mt.hpp"  // for multithreaded version
+#include "sparse_dispatch.hpp"  
+
 
 namespace py = pybind11;
 
@@ -71,32 +73,51 @@ static py::array_t<float> decode_from_bcoo16_py(const BCOO16& bcoo)
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Sparse AVX-512 matvec  – returns a fresh NumPy array
+// static py::array_t<float>
+// sparse_matvec_avx512_py(const BCOO16& A,
+//                         py::array_t<float, py::array::c_style | py::array::forcecast> x,
+//                         py::array_t<float, py::array::c_style | py::array::forcecast> b)
+// {
+// #if !defined(__AVX512F__)
+//     throw std::runtime_error("CPU lacks AVX-512F support!");
+// #endif
+//     auto bufx = x.request(), bufb = b.request();
+//     if (bufx.ndim != 1 || bufb.ndim != 1)
+//         throw std::runtime_error("x and bias must be 1-D arrays");
+
+//     size_t M = A.original_num_rows;
+//     if (bufx.shape[0] != static_cast<ssize_t>(A.original_num_cols))
+//         throw std::runtime_error("x length != matrix cols");
+//     if (bufb.shape[0] != static_cast<ssize_t>(M))
+//         throw std::runtime_error("bias length != matrix rows");
+
+//     py::array_t<float> y(M);
+//     auto bufy = y.request();
+
+//     sparse_matvec_avx512(A,
+//                          static_cast<float*>(bufx.ptr),
+//                          static_cast<float*>(bufb.ptr),
+//                          static_cast<float*>(bufy.ptr),
+//                          M);
+//     return y;
+// }
+
 static py::array_t<float>
 sparse_matvec_avx512_py(const BCOO16& A,
-                        py::array_t<float, py::array::c_style | py::array::forcecast> x,
-                        py::array_t<float, py::array::c_style | py::array::forcecast> b)
+                        py::array_t<float> x,
+                        py::array_t<float> b)
 {
-#if !defined(__AVX512F__)
-    throw std::runtime_error("CPU lacks AVX-512F support!");
-#endif
     auto bufx = x.request(), bufb = b.request();
-    if (bufx.ndim != 1 || bufb.ndim != 1)
-        throw std::runtime_error("x and bias must be 1-D arrays");
-
     size_t M = A.original_num_rows;
-    if (bufx.shape[0] != static_cast<ssize_t>(A.original_num_cols))
-        throw std::runtime_error("x length != matrix cols");
-    if (bufb.shape[0] != static_cast<ssize_t>(M))
-        throw std::runtime_error("bias length != matrix rows");
 
     py::array_t<float> y(M);
     auto bufy = y.request();
+    std::memcpy(bufy.ptr, bufb.ptr, M*sizeof(float));
 
-    sparse_matvec_avx512(A,
-                         static_cast<float*>(bufx.ptr),
-                         static_cast<float*>(bufb.ptr),
-                         static_cast<float*>(bufy.ptr),
-                         M);
+    auto fn = get_spmv_kernel(A);
+    fn(A.blocks.data(), A.blocks.size(),
+       static_cast<float*>(bufx.ptr),
+       static_cast<float*>(bufy.ptr));
     return y;
 }
 
@@ -122,4 +143,25 @@ PYBIND11_MODULE(sparseops_backend, m)
 
     m.def("run_matvec", &run_matvec_py,
           "Reference dense matvec (Naive C++ kernel)");
+    m.def("sparse_matvec_avx512_mt",
+        [](const BCOO16& A,
+            py::array_t<float> x,
+            py::array_t<float> b,
+            int threads) {
+            auto bufx = x.request(), bufb = b.request();
+            py::array_t<float> y(A.original_num_rows);
+            auto bufy = y.request();
+
+            sparse_matvec_avx512_mt(
+                A,
+                static_cast<float*>(bufx.ptr),
+                static_cast<float*>(bufb.ptr),
+                static_cast<float*>(bufy.ptr),
+                threads);
+            return y;
+        },
+        py::arg("A"), py::arg("x"), py::arg("b"),
+        py::arg("threads") = 0,
+        "Multithreaded sparse matvec (AVX-512)");
+
 }

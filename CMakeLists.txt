@@ -1,70 +1,107 @@
-cmake_minimum_required(VERSION 3.10)
-project(ultrasparse_runtime)
+cmake_minimum_required(VERSION 3.15)
+project(sparseops LANGUAGES CXX)
 
+# ──────────────────────────────────────────────────────────────
+#  Compiler & ISA flags
+# ──────────────────────────────────────────────────────────────
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# Detect AVX-512 and AVX2 support
 include(CheckCXXCompilerFlag)
-check_cxx_compiler_flag("-mavx512f" COMPILER_SUPPORTS_AVX512F)
-check_cxx_compiler_flag("-mavx2" COMPILER_SUPPORTS_AVX2)
+check_cxx_compiler_flag("-mavx512f" HAVE_AVX512F)
+check_cxx_compiler_flag("-mavx2"    HAVE_AVX2)
 
-if(COMPILER_SUPPORTS_AVX512F)
-    set(AVX512_FLAGS "-mavx512f")
+set(SIMD_FLAGS "")
+if (HAVE_AVX512F)
+    list(APPEND SIMD_FLAGS "-mavx512f")
+endif()
+if (HAVE_AVX2)
+    list(APPEND SIMD_FLAGS "-mavx2")
+endif()
+list(APPEND SIMD_FLAGS "-mfma")
+
+# ──────────────────────────────────────────────────────────────
+#  Optional OpenMP
+# ──────────────────────────────────────────────────────────────
+find_package(OpenMP QUIET)
+
+# ──────────────────────────────────────────────────────────────
+#  pybind11
+# ──────────────────────────────────────────────────────────────
+find_package(pybind11 CONFIG QUIET)
+if (NOT pybind11_FOUND)
+    # Fallback: query Python for include flags
+    execute_process(
+        COMMAND python3 -m pybind11 --includes
+        OUTPUT_VARIABLE PYBIND11_CFLAGS
+        OUTPUT_STRIP_TRAILING_WHITESPACE)
+    separate_arguments(PYBIND11_CFLAGS)
 endif()
 
-if(COMPILER_SUPPORTS_AVX2)
-    set(AVX2_FLAGS "-mavx2")
-endif()
+# ──────────────────────────────────────────────────────────────
+#  pybind11 (header-only fallback)
+# ──────────────────────────────────────────────────────────────
+# Hard-coded include path to your venv:
+include_directories(
+    /scratch/network/jg0037/env/lib64/python3.9/site-packages/pybind11/include)
 
-# Output shared library
-add_library(ultrasparse SHARED
+# Also grab Python include / link flags
+find_package(Python3 COMPONENTS Development REQUIRED)
+
+# ──────────────────────────────────────────────────────────────
+#  Static library: code generator + JIT cache
+# ──────────────────────────────────────────────────────────────
+add_library(sparse_codegen STATIC
+    src/codegen/jit_cache.cpp
+    src/codegen/spmv_template.cpp)
+
+set_target_properties(sparse_codegen PROPERTIES POSITION_INDEPENDENT_CODE ON)
+
+
+target_include_directories(sparse_codegen
+    PUBLIC ${CMAKE_SOURCE_DIR}/include)
+
+target_link_libraries(sparse_codegen
+    PRIVATE pthread dl)
+
+# ──────────────────────────────────────────────────────────────
+#  Python extension module
+# ──────────────────────────────────────────────────────────────
+add_library(sparseops_backend MODULE
     src/bindings.cpp
     src/dense_matvec.cpp
-    # src/sparse_matvec.cpp  # (optional: keep for legacy, but not needed for dense)
-)
-
-# Build Python extension module
-add_library(sparseops_backend MODULE src/bindings.cpp src/dense_matvec.cpp src/bcoo16_encoder.cpp src/sparse_matvec.cpp)
+    src/bcoo16_encoder.cpp
+    src/sparse_matvec.cpp
+    src/sparse_matvec_mt.cpp
+    src/sparse_dispatch.cpp)
+target_include_directories(sparseops_backend PRIVATE ${PYBIND11_INCLUDES})
+# Naming: produce "sparseops_backend.so" directly
 set_target_properties(sparseops_backend PROPERTIES
     PREFIX ""
-    SUFFIX ".so"
-)
+    SUFFIX ".so")
 
-# Include our C++ headers and pybind11
-include_directories(${CMAKE_SOURCE_DIR}/include)
-include_directories(/scratch/network/jg0037/env/lib64/python3.9/site-packages/pybind11/include)
-include_directories(/usr/include/python3.9)
-# Get pybind11 include dirs from Python
-execute_process(
-    COMMAND python3 -m pybind11 --includes
-    OUTPUT_VARIABLE PYBIND11_INCLUDES
-    OUTPUT_STRIP_TRAILING_WHITESPACE
-)
-separate_arguments(PYBIND11_INCLUDES)
-target_include_directories(ultrasparse PRIVATE ${PYBIND11_INCLUDES})
-target_include_directories(sparseops_backend PRIVATE ${PYBIND11_INCLUDES})
+target_include_directories(sparseops_backend
+    PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${pybind11_INCLUDE_DIRS}      # empty if find_package failed
+        ${PYBIND11_CFLAGS})           # fallback include flags
 
-# Link OpenMP if available
-find_package(OpenMP)
-if(OpenMP_CXX_FOUND)
-    message(STATUS "Found OpenMP: enabling")
-    target_link_libraries(ultrasparse PRIVATE OpenMP::OpenMP_CXX)
-    target_link_libraries(sparseops_backend PRIVATE OpenMP::OpenMP_CXX)
-else()
-    message(STATUS "OpenMP not found: manually setting for macOS")
-    include_directories(SYSTEM "/opt/homebrew/opt/libomp/include")
-    link_directories("/opt/homebrew/opt/libomp/lib")
-    target_link_libraries(ultrasparse PRIVATE omp)
-    target_link_libraries(sparseops_backend PRIVATE omp)
-endif()
-
-target_compile_options(ultrasparse PRIVATE -O3 ${AVX512_FLAGS} ${AVX2_FLAGS} -mfma -fopenmp -falign-functions=64 -DNDEBUG)
-# target_compile_options(sparseops_backend PRIVATE -O3 ${AVX512_FLAGS} ${AVX2_FLAGS} -mfma -fopenmp -falign-functions=64 -DNDEBUG -DPYBIND11_DETAILED_ERROR_MESSAGES)
-
-target_compile_options(sparseops_backend PRIVATE -O3 ${AVX512_FLAGS} ${AVX2_FLAGS} -mfma -fopenmp -falign-functions=64 -DNDEBUG -DPYBIND11_DETAILED_ERROR_MESSAGES)
+target_link_libraries(sparseops_backend
+    PRIVATE
+        sparse_codegen
+        Python3::Python
+        $<$<BOOL:${OpenMP_CXX_FOUND}>:OpenMP::OpenMP_CXX>)
 
 
-# Install rules (optional)
-install(TARGETS ultrasparse DESTINATION lib)
+target_compile_options(sparseops_backend
+    PRIVATE
+        -O3 -falign-functions=64 -DNDEBUG
+        ${SIMD_FLAGS}
+        $<$<BOOL:${OpenMP_CXX_FOUND}>:-fopenmp>
+        -DPYBIND11_DETAILED_ERROR_MESSAGES)
+
+# ──────────────────────────────────────────────────────────────
+#  Install rules (optional)
+# ──────────────────────────────────────────────────────────────
+install(TARGETS sparseops_backend LIBRARY DESTINATION lib)
 install(DIRECTORY include/ DESTINATION include)
