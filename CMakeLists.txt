@@ -53,7 +53,8 @@ find_package(Python3 COMPONENTS Development REQUIRED)
 # ──────────────────────────────────────────────────────────────
 add_library(sparse_codegen STATIC
     src/codegen/jit_cache.cpp
-    src/codegen/spmv_template.cpp)
+    src/codegen/spmv_template.cpp
+    src/codegen/spmv_dense_template.cpp)
 
 set_target_properties(sparse_codegen PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
@@ -73,7 +74,9 @@ add_library(sparseops_backend MODULE
     src/bcoo16_encoder.cpp
     src/sparse_matvec.cpp
     src/sparse_matvec_mt.cpp
-    src/sparse_dispatch.cpp)
+    src/sparse_dispatch.cpp
+    src/sparse_preproc.cpp
+    src/dense_block_kernel.cpp)
 target_include_directories(sparseops_backend PRIVATE ${PYBIND11_INCLUDES})
 # Naming: produce "sparseops_backend.so" directly
 set_target_properties(sparseops_backend PROPERTIES

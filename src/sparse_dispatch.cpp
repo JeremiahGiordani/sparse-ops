@@ -31,16 +31,15 @@ static std::string hot_mask_key(const BCOO16& A)
 
 KernelFn get_spmv_kernel(const BCOO16& A)
 {
-    std::ostringstream k;
-    k << A.original_num_rows << '|'
-      << A.original_num_cols << '|'
-      << A.blocks.size()     << '|'
-      << hot_mask_key(A);
+    bool dense_test = std::getenv("DENSE_TEST") != nullptr;   // new
 
-    bool avx512 = __builtin_cpu_supports("avx512f");
-    k << (avx512 ? "|avx512" : "|avx2");
+    std::string key = (dense_test ? "dense|" : "normal|") +
+                      std::to_string(A.original_num_rows) + "|" +
+                      std::to_string(A.blocks.size());
 
-    std::string key = k.str();
-    std::string cpp = generate_spmv_cpp(A, "spmv_kernel", avx512);
+    std::string cpp =
+        dense_test ? generate_spmv_dense_cpp(A, "spmv_kernel")
+                   : generate_spmv_cpp      (A, "spmv_kernel", true);
+
     return get_or_build_kernel(key, cpp, "spmv_kernel");
 }

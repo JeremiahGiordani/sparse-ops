@@ -9,6 +9,7 @@
 #include "bcoo16_encoder.hpp"
 #include "sparse_matvec_mt.hpp"  // for multithreaded version
 #include "sparse_dispatch.hpp"  
+#include "dense_block_kernel.hpp"  // for dense_block_kernel
 
 
 namespace py = pybind11;
@@ -72,35 +73,7 @@ static py::array_t<float> decode_from_bcoo16_py(const BCOO16& bcoo)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Sparse AVX-512 matvec  – returns a fresh NumPy array
-// static py::array_t<float>
-// sparse_matvec_avx512_py(const BCOO16& A,
-//                         py::array_t<float, py::array::c_style | py::array::forcecast> x,
-//                         py::array_t<float, py::array::c_style | py::array::forcecast> b)
-// {
-// #if !defined(__AVX512F__)
-//     throw std::runtime_error("CPU lacks AVX-512F support!");
-// #endif
-//     auto bufx = x.request(), bufb = b.request();
-//     if (bufx.ndim != 1 || bufb.ndim != 1)
-//         throw std::runtime_error("x and bias must be 1-D arrays");
 
-//     size_t M = A.original_num_rows;
-//     if (bufx.shape[0] != static_cast<ssize_t>(A.original_num_cols))
-//         throw std::runtime_error("x length != matrix cols");
-//     if (bufb.shape[0] != static_cast<ssize_t>(M))
-//         throw std::runtime_error("bias length != matrix rows");
-
-//     py::array_t<float> y(M);
-//     auto bufy = y.request();
-
-//     sparse_matvec_avx512(A,
-//                          static_cast<float*>(bufx.ptr),
-//                          static_cast<float*>(bufb.ptr),
-//                          static_cast<float*>(bufy.ptr),
-//                          M);
-//     return y;
-// }
 
 static py::array_t<float>
 sparse_matvec_avx512_py(const BCOO16& A,
@@ -151,7 +124,7 @@ PYBIND11_MODULE(sparseops_backend, m)
             auto bufx = x.request(), bufb = b.request();
             py::array_t<float> y(A.original_num_rows);
             auto bufy = y.request();
-
+            
             sparse_matvec_avx512_mt(
                 A,
                 static_cast<float*>(bufx.ptr),
@@ -163,5 +136,22 @@ PYBIND11_MODULE(sparseops_backend, m)
         py::arg("A"), py::arg("x"), py::arg("b"),
         py::arg("threads") = 0,
         "Multithreaded sparse matvec (AVX-512)");
+    m.def("dense_block_kernel",
+      [](py::array_t<float, py::array::c_style|py::array::forcecast> A,
+         py::array_t<float, py::array::c_style|py::array::forcecast> x,
+         py::array_t<float, py::array::c_style|py::array::forcecast> b)
+      {
+          auto bufA = A.request(), bufx = x.request(), bufb = b.request();
+          size_t M = bufA.shape[0], K = bufA.shape[1];
+          py::array_t<float> y(M);
+          auto bufy = y.request();
 
+          dense_block_kernel(static_cast<float*>(bufA.ptr),
+                             static_cast<float*>(bufx.ptr),
+                             static_cast<float*>(bufb.ptr),
+                             static_cast<float*>(bufy.ptr),
+                             M, K);
+          return y;
+      },
+      "Baseline dense y = A·x + b (blocked AVX-512)");
 }

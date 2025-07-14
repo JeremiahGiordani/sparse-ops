@@ -2,9 +2,11 @@
 #include "jit_cache.hpp"           // <-- need get_or_build_kernel
 #include "codegen/spmv_template.hpp"
 #include "sparse_dispatch.hpp"
+#include "sparse_preproc.hpp" 
 #include <omp.h>
 #include <cstring>
 #include <vector>
+#include <immintrin.h>
 
 // row_ptr builder unchanged …
 
@@ -31,28 +33,32 @@ void sparse_matvec_avx512_mt(const BCOO16& A,
     auto row_ptr = make_row_ptr(A);
 
     // -------- get (or compile) the same kernel used by the single-thread path
-    auto fn = get_spmv_kernel(A);   // returns KernelFn
 
     if (num_threads > 0) omp_set_num_threads(num_threads);
 
-#pragma omp parallel
+    #pragma omp parallel for schedule(static)
+    for (size_t row = 0; row < M; ++row)
     {
-        int tid  = omp_get_thread_num();
-        int T    = omp_get_num_threads();
-        size_t rows_per_thr = (M + T - 1) / T;
-        size_t r0 = tid * rows_per_thr;
-        size_t r1 = std::min(M, r0 + rows_per_thr);
+        float acc = b ? b[row] : 0.0f;        // bias once
 
-        // copy bias slice
-        std::memcpy(y + r0, b + r0, (r1 - r0) * sizeof(float));
+        // process all blocks of this row
+        size_t blk0 = row_ptr[row];
+        size_t blk1 = row_ptr[row+1];
 
-        // block slice for this thread
-        size_t blk0 = row_ptr[r0];
-        size_t blk1 = row_ptr[r1];
+        /* load-reuse loop identical to fused dense kernel */
+        for (size_t bi = blk0; bi < blk1; ) {
+            int base = A.blocks[bi].first_col & ~15;
+            __m512 xv = _mm512_loadu_ps(x + base);
 
-        fn(A.blocks.data() + blk0,      // pointer to first block
-           blk1 - blk0,                 // number of blocks
-           x,
-           y);                          // *shared* y; no race because rows disjoint
+            __m512 acc_vec = _mm512_setzero_ps();
+            while (bi < blk1 && (A.blocks[bi].first_col & ~15) == base) {
+                __m512 v = _mm512_loadu_ps(A.blocks[bi].values);
+                acc_vec  = _mm512_fmadd_ps(v, xv, acc_vec);
+                ++bi;
+            }
+            acc += _mm512_reduce_add_ps(acc_vec);
+        }
+        y[row] = acc;
     }
+
 }

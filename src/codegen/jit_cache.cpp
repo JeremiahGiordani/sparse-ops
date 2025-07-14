@@ -85,9 +85,12 @@ KernelFn get_or_build_kernel(const std::string& key,
 
     std::ostringstream cmd;
     cmd << cxx << " -std=c++17 -shared -fPIC "
-        << clang_flags << ' '
-        << "-I" << "/home/jg0037/sparse-ops/include" << " "
-        << tmp_cpp << " -o " << tmp_so;
+        << clang_flags << ' ';
+    if (clang_flags.find("-mavx512f") != std::string::npos)
+        cmd << "-mavx512vl ";
+    cmd << "-I" << "/home/jg0037/sparse-ops/include" << " ";
+    cmd << tmp_cpp << " -o " << tmp_so;
+
 
     int ret = std::system(cmd.str().c_str());
     if (ret != 0)
