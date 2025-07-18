@@ -86,13 +86,27 @@ KernelFn get_or_build_kernel(const std::string& key,
     std::ostringstream cmd;
     cmd << cxx << " -std=c++17 -shared -fPIC "
         << clang_flags << ' ';
+    
+    if (std::getenv("PROFILE_MASKS"))
+        cmd << "-DPROFILE_MASKS ";  
     if (clang_flags.find("-mavx512f") != std::string::npos)
         cmd << "-mavx512vl ";
     cmd << "-I" << "/home/jg0037/sparse-ops/include" << " ";
     cmd << tmp_cpp << " -o " << tmp_so;
 
 
+    std::string tmp_log = std::string(tmp_so) + ".log";
+    cmd << " 2> " << tmp_log;          // capture stderr
     int ret = std::system(cmd.str().c_str());
+    if (ret != 0) {
+        std::ifstream log(tmp_log);
+        std::cerr << "[jit] clang failed:\n";
+        std::cerr << log.rdbuf();
+        std::cerr << std::flush;
+        std::remove(tmp_log.c_str());
+        throw std::runtime_error("jit_cache: clang compilation failed");
+    }
+    std::remove(tmp_log.c_str());
     if (ret != 0)
         throw std::runtime_error("jit_cache: clang compilation failed");
 

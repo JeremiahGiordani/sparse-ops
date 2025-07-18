@@ -27,38 +27,26 @@ void sparse_matvec_avx512_mt(const BCOO16& A,
                              const float*  x,
                              const float*  b,
                              float*        y,
-                             int           num_threads /*0 = OMP default*/)
+                             int threads)
 {
     size_t M = A.original_num_rows;
     auto row_ptr = make_row_ptr(A);
+    auto fn      = get_spmv_kernel(A);             // JIT’d micro-kernel
 
-    // -------- get (or compile) the same kernel used by the single-thread path
+    if (threads > 0)  omp_set_num_threads(threads);
 
-    if (num_threads > 0) omp_set_num_threads(num_threads);
+    /* bias once, serial */
+    if (b) std::memcpy(y, b, M*sizeof(float));
+    else   std::memset(y, 0, M*sizeof(float));
 
-    #pragma omp parallel for schedule(static)
-    for (size_t row = 0; row < M; ++row)
+#pragma omp parallel for schedule(static)
+    for (size_t r = 0; r < M; ++r)
     {
-        float acc = b ? b[row] : 0.0f;        // bias once
-
-        // process all blocks of this row
-        size_t blk0 = row_ptr[row];
-        size_t blk1 = row_ptr[row+1];
-
-        /* load-reuse loop identical to fused dense kernel */
-        for (size_t bi = blk0; bi < blk1; ) {
-            int base = A.blocks[bi].first_col & ~15;
-            __m512 xv = _mm512_loadu_ps(x + base);
-
-            __m512 acc_vec = _mm512_setzero_ps();
-            while (bi < blk1 && (A.blocks[bi].first_col & ~15) == base) {
-                __m512 v = _mm512_loadu_ps(A.blocks[bi].values);
-                acc_vec  = _mm512_fmadd_ps(v, xv, acc_vec);
-                ++bi;
-            }
-            acc += _mm512_reduce_add_ps(acc_vec);
-        }
-        y[row] = acc;
+        size_t blk0 = row_ptr[r];
+        size_t blk1 = row_ptr[r+1];
+        fn(A.blocks.data() + blk0,           // pointer to row’s blocks
+           blk1 - blk0,                      // #blocks in this row
+           x,
+           y);                               // kernel adds into y in-place
     }
-
 }
