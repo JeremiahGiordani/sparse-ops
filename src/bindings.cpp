@@ -72,48 +72,49 @@ static py::array_t<float> decode_from_bcoo16_py(const BCOO16& bcoo)
     return out;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-
-
-static py::array_t<float>
-sparse_matvec_avx512_py(const BCOO16& A,
-                        py::array_t<float> x,
-                        py::array_t<float> b)
-{
-    auto bufx = x.request(), bufb = b.request();
-    size_t M = A.original_num_rows;
-
-    py::array_t<float> y(M);
-    auto bufy = y.request();
-    std::memcpy(bufy.ptr, bufb.ptr, M*sizeof(float));
-
-    auto fn = get_spmv_kernel(A);
-    fn(A.blocks.data(), A.blocks.size(),
-       static_cast<float*>(bufx.ptr),
-       static_cast<float*>(bufy.ptr));
-    return y;
-}
 
 // ─────────────────────────────────────────────────────────────────────────────
 PYBIND11_MODULE(sparseops_backend, m)
 {
     m.doc() = "Sparse CPU kernels (BCOO-16)";
 
-    // — opaque BCOO16 handle (blocks vector not exposed to Python) —
+    // - ─ BCOO16Block handle ────────────────────────────────────────────────
+py::class_<BCOO16Block>(m, "BCOO16Block")
+    .def(py::init<>())
+    .def_readwrite("row_id", &BCOO16Block::row_id)
+    .def_readwrite("first_col", &BCOO16Block::first_col)
+    .def_readwrite("bitmask", &BCOO16Block::bitmask)
+    .def_readwrite("val_off", &BCOO16Block::val_off);
+
+    // — BCOO16 handle —
     py::class_<BCOO16>(m, "BCOO16")
         .def(py::init<>())
         .def_readwrite("original_num_rows", &BCOO16::original_num_rows)
-        .def_readwrite("original_num_cols", &BCOO16::original_num_cols);
+        .def_readwrite("original_num_cols", &BCOO16::original_num_cols)
+        .def_property_readonly("blocks",
+            [](const BCOO16& b) {
+                py::list out;
+                for (const auto& blk : b.blocks) {
+                    /* (row_id, first_col, bitmask, val_off) */
+                    out.append(py::make_tuple(
+                        blk.row_id,
+                        blk.first_col,
+                        blk.bitmask,
+                        blk.val_off));
+                }
+                return out;        // Python sees a list[tuple[4]]
+            })
+        .def_property_readonly("values",
+            [](const BCOO16& b) {
+                return py::array_t<float>(
+                    b.values.size(), b.values.data());
+            });
 
     // — API surface —
     m.def("encode_to_bcoo16",  &encode_to_bcoo16_py,
           "Convert dense NumPy matrix → BCOO-16 handle");
     m.def("decode_from_bcoo16", &decode_from_bcoo16_py,
           "Convert BCOO-16 handle → dense NumPy matrix (testing only)");
-
-    m.def("sparse_matvec_avx512", &sparse_matvec_avx512_py,
-          "y = A @ x + b  (AVX-512, BCOO-16 matrix)");
-
     m.def("run_matvec", &run_matvec_py,
           "Reference dense matvec (Naive C++ kernel)");
     m.def("sparse_matvec_avx512_mt",

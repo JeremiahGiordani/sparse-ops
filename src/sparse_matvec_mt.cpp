@@ -30,28 +30,28 @@ void sparse_matvec_avx512_mt(const BCOO16& A,
     KernelFn kernel = get_spmv_kernel(A);
 
 #pragma omp parallel
-{
-    const int  tid   = omp_get_thread_num();
-    const int  T     = omp_get_num_threads();
-    const size_t nB  = A.blocks.size();
+    {
+        const int  tid   = omp_get_thread_num();
+        const int  T     = omp_get_num_threads();
+        const size_t nB  = A.blocks.size();
 
-    /* thread‑local replica of x (first touch ⇒ NUMA‑local) */
-    static thread_local std::vector<float> x_local;
-    if (x_local.empty()) {
-        x_local.assign(A.original_num_cols, 0.0f);
-        std::memcpy(x_local.data(), x,
-                    A.original_num_cols * sizeof(float));
-    }
-    const float* xT = x_local.data();          // NUMA‑local pointer
+        /* thread‑local replica of x (first touch ⇒ NUMA‑local) */
+        static thread_local std::vector<float> x_local;
+        if (x_local.empty()) {
+            x_local.assign(A.original_num_cols, 0.0f);
+            std::memcpy(x_local.data(), x,
+                        A.original_num_cols * sizeof(float));
+        }
+        const float* xT = x_local.data();          // NUMA‑local pointer
 
-    /* block range for this thread */
-    size_t blk0 = ( nB * tid     ) / T;
-    size_t blk1 = ( nB * (tid+1) ) / T;
+        /* block range for this thread */
+        size_t blk0 = ( nB * tid     ) / T;
+        size_t blk1 = ( nB * (tid+1) ) / T;
 
-    kernel(A.blocks.data() + blk0,
-           blk1 - blk0,
-           A.values.data(),
-           xT,                                  // NUMA‑local x
-           ypriv[tid].data());
-} /* omp parallel */
+        kernel(A.blocks.data() + blk0,
+            blk1 - blk0,
+            A.values.data(),
+            xT,                                  // NUMA‑local x
+            ypriv[tid].data());
+    } /* omp parallel */
 }

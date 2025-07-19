@@ -72,7 +72,6 @@ add_library(sparseops_backend MODULE
     src/bindings.cpp
     src/dense_matvec.cpp
     src/bcoo16_encoder.cpp
-    src/sparse_matvec.cpp
     src/sparse_matvec_mt.cpp
     src/sparse_dispatch.cpp
     src/sparse_preproc.cpp
