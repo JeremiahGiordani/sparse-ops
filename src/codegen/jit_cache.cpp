@@ -1,126 +1,78 @@
 #include "jit_cache.hpp"
-#include "bcoo16_encoder.hpp"          // for BCOO16Block definition
 
 #include <filesystem>
 #include <fstream>
-#include <sstream>
+#include <iostream>
 #include <cstdlib>
 #include <cstdio>
 #include <dlfcn.h>
-#include <unistd.h>
-#include <sys/stat.h>
-#include <iostream>
+#include <mutex>
 
 namespace fs = std::filesystem;
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  Helpers
-// ─────────────────────────────────────────────────────────────────────────────
-
-// *Very* simple hash  →  16-byte hex string (replace w/ SHA-256 later).
-static std::string hash_key(const std::string& s) {
-    std::size_t h = std::hash<std::string>{}(s);
-    std::ostringstream oss;
-    oss << std::hex << h;
-    return oss.str();
-}
-
-static fs::path cache_directory() {
-    const char* home = std::getenv("HOME");
-    fs::path dir = home ? fs::path(home) / ".cache" / "sparseops"
-                        : fs::temp_directory_path() / "sparseops";
-    fs::create_directories(dir);
+/* simple thread‑safe singleton for the cache directory */
+static fs::path cache_dir()
+{
+    static fs::path dir = []{
+        fs::path p = fs::path(std::getenv("HOME")) / ".cache" / "sparseops";
+        fs::create_directories(p);
+        return p;
+    }();
     return dir;
 }
 
-static void write_file(const fs::path& p, const std::string& text) {
-    std::ofstream ofs(p, std::ios::out | std::ios::trunc);
-    if (!ofs) throw std::runtime_error("jit_cache: cannot open " + p.string());
-    ofs << text;
-}
+static std::mutex cache_mu;
 
-static bool verbose() {
-    return std::getenv("SPARSEOPS_VERBOSE") != nullptr;
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-//  Public API
-// ─────────────────────────────────────────────────────────────────────────────
+/*---------------------------------------------------------------*/
 KernelFn get_or_build_kernel(const std::string& key,
-                             const std::string& cpp_src,
-                             const std::string& func_name,
-                             const std::string& clang_flags)
+                             const std::string& cpp,
+                             const std::string& symbol)
 {
-    fs::path cache_dir = cache_directory();
-    std::string key_hex = hash_key(key);
-    fs::path so_path = cache_dir / (key_hex + ".so");
+    std::lock_guard<std::mutex> lk(cache_mu);
 
-    // 1. Use cached .so if it exists
+    fs::path so_path = cache_dir() / (key + ".so");
     if (fs::exists(so_path)) {
-        if (verbose()) std::cerr << "[sparseops] HIT  " << so_path << '\n';
-        void* handle = dlopen(so_path.c_str(), RTLD_NOW | RTLD_LOCAL);
-        if (!handle)
-            throw std::runtime_error("jit_cache: dlopen failed for " +
-                                     so_path.string() + "\n" + dlerror());
-        auto sym = reinterpret_cast<KernelFn>(dlsym(handle, func_name.c_str()));
-        if (!sym)
-            throw std::runtime_error("jit_cache: dlsym failed for " +
-                                     func_name + "\n" + dlerror());
-        return sym;
+        if (std::getenv("SPARSEOPS_VERBOSE"))
+            std::cerr << "[sparseops] HIT  \"" << so_path << "\"\n";
+        return reinterpret_cast<KernelFn>(
+            dlsym(dlopen(so_path.c_str(), RTLD_NOW | RTLD_LOCAL |
+                                           RTLD_DEEPBIND |
+                                           RTLD_NODELETE),
+                  symbol.c_str()));
     }
 
-    if (verbose()) std::cerr << "[sparseops] COMPILE -> " << so_path << '\n';
+    /* ---------- write temp cpp ---------- */
+    fs::path  cpp_path = cache_dir() / (key + ".cpp");
+    std::ofstream(cpp_path) << cpp;
 
-    // 2. Compile new kernel
-    fs::path tmp_cpp = cache_dir / (key_hex + ".cpp");
-    write_file(tmp_cpp, cpp_src);
+    fs::path  so_build = cache_dir() / (key + ".build.so");
 
-    fs::path tmp_so  = cache_dir / (key_hex + ".build.so");
-
-    // Choose a compiler: env SPARSEOPS_CXX > clang++ > g++
-    const char* cxx =
-        std::getenv("SPARSEOPS_CXX") ? std::getenv("SPARSEOPS_CXX") :
-        (std::system("command -v clang++ > /dev/null 2>&1") == 0 ? "clang++" :
-        "g++");   // assume g++ is present
-
+    /* ---------- build cmd ---------- */
+    const char* cxx       = std::getenv("CXX") ? std::getenv("CXX") : "g++";
+    const char* cxxflags  = std::getenv("CXXFLAGS") ? std::getenv("CXXFLAGS") : "-O3 -march=native";
     std::ostringstream cmd;
-    cmd << cxx << " -std=c++17 -shared -fPIC "
-        << clang_flags << ' ';
-    
-    if (std::getenv("PROFILE_MASKS"))
-        cmd << "-DPROFILE_MASKS ";  
-    if (clang_flags.find("-mavx512f") != std::string::npos)
-        cmd << "-mavx512vl ";
-    cmd << "-I" << "/home/jg0037/sparse-ops/include" << " ";
-    cmd << tmp_cpp << " -o " << tmp_so;
+    cmd << cxx << " -std=c++17 -shared -fPIC " << cxxflags << ' ';
 
+    if (std::getenv("PROFILE_MASKS"))          // pass macro to JIT compile
+        cmd << "-DPROFILE_MASKS ";
+    cmd << "-I" << (fs::current_path() / "include") << ' '
+        << cpp_path << " -o " << so_build;
 
-    std::string tmp_log = std::string(tmp_so) + ".log";
-    cmd << " 2> " << tmp_log;          // capture stderr
-    int ret = std::system(cmd.str().c_str());
-    if (ret != 0) {
-        std::ifstream log(tmp_log);
-        std::cerr << "[jit] clang failed:\n";
-        std::cerr << log.rdbuf();
-        std::cerr << std::flush;
-        std::remove(tmp_log.c_str());
-        throw std::runtime_error("jit_cache: clang compilation failed");
-    }
-    std::remove(tmp_log.c_str());
-    if (ret != 0)
+    if (std::getenv("SPARSEOPS_VERBOSE"))
+        std::cerr << "[sparseops] COMPILE -> \"" << so_path << "\"\n";
+
+    /* ---------- compile ---------- */
+    if (std::system(cmd.str().c_str()) != 0)
         throw std::runtime_error("jit_cache: clang compilation failed");
 
-    // 3. Atomically move into cache path
-    fs::rename(tmp_so, so_path);
+    fs::rename(so_build, so_path);
 
-    // 4. dlopen
-    void* handle = dlopen(so_path.c_str(), RTLD_NOW | RTLD_LOCAL);
+    /* ---------- load ---------- */
+    void* handle = dlopen(so_path.c_str(),
+                          RTLD_NOW | RTLD_LOCAL |
+                          RTLD_DEEPBIND | RTLD_NODELETE);
     if (!handle)
-        throw std::runtime_error("jit_cache: dlopen failed for " +
-                                 so_path.string() + "\n" + dlerror());
-    auto sym = reinterpret_cast<KernelFn>(dlsym(handle, func_name.c_str()));
-    if (!sym)
-        throw std::runtime_error("jit_cache: dlsym failed for " +
-                                 func_name + "\n" + dlerror());
-    return sym;
+        throw std::runtime_error(dlerror());
+
+    return reinterpret_cast<KernelFn>(dlsym(handle, symbol.c_str()));
 }

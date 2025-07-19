@@ -5,20 +5,18 @@
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Cache-aligned 64-B block (now defined in the header so it's a complete type)
-struct alignas(64) BCOO16Block {
+struct BCOO16Block {        // ← replace old definition
     uint32_t row_id;
-    uint32_t first_col;
+    uint16_t first_col;
     uint16_t bitmask;
-    uint16_t _pad;          // keeps the struct 64-byte aligned
-    float    values[16];    // always 16 floats, zeros where mask bit = 0
+    uint32_t val_off;       // NEW
+};
+struct BCOO16 {
+    uint32_t original_num_rows, original_num_cols;
+    std::vector<BCOO16Block> blocks;
+    std::vector<float>       values;    // NEW: contiguous nnz buffer
 };
 
-// Container for all blocks + original dims
-struct BCOO16 {
-    std::size_t original_num_rows{};
-    std::size_t original_num_cols{};
-    std::vector<BCOO16Block> blocks;   // AoS
-};
 
 // Encoder / decoder declarations
 BCOO16 encode_to_bcoo16(const std::vector<std::vector<float>>& dense);

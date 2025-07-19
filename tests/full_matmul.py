@@ -11,7 +11,7 @@ import scipy.sparse as sp
 import torch
 import tensorflow as tf  # <- Added
 
-from python.cpp_backend import run_matvec
+from python.cpp_backend import run_matvec, decode_bcoo16, convert_to_bcoo16, run_sparse_matvec
 from python.utils import to_csr
 
 import onnx
@@ -21,12 +21,14 @@ from openvino.runtime import Core
 
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 
+num_threads = int(os.environ.get("OMP_NUM_THREADS", "1"))
+
 # ----------------------------------------------------------------------
 # Experiment parameters
 # ----------------------------------------------------------------------
 INPUT_DIM  = 2000
 OUTPUT_DIM = 2000
-SPARSITY   = 0.999
+SPARSITY   = 0.9
 N_RUNS     = 100
 SEED       = 42
 # ----------------------------------------------------------------------
@@ -98,6 +100,8 @@ coo_indices = torch.nonzero(weight_t).t()
 coo_values = weight_t[coo_indices[0], coo_indices[1]]
 sparse_tensor = torch.sparse_coo_tensor(coo_indices, coo_values, size=weight_t.shape)
 
+bcoo_16 = convert_to_bcoo16(weight_np)
+
 
 # ----------------------------------------------------------------------
 # Utility
@@ -125,6 +129,9 @@ def scipy_run():
 
 def custom_run():
     return run_matvec(weight_np, bias_np, input_np)
+
+def custom_sparse_run():
+    return run_sparse_matvec(bcoo_16, bias_np, input_np, threads=num_threads)
 
 def tensorflow_run():
     return tf.linalg.matvec(weight_tf, input_tf) + bias_tf
@@ -176,6 +183,7 @@ out_torch = torch_run().numpy()
 print("Torch vs NumPy :", np.allclose(out_torch, numpy_run(), atol=1e-4))
 print("Torch vs SciPy :", np.allclose(out_torch, scipy_run(), atol=1e-4))
 print("Torch vs Custom:", np.allclose(out_torch, custom_run(), atol=1e-4))
+print("Torch vs Custom Sparse:", np.allclose(out_torch, custom_sparse_run(), atol=1e-4))
 print("Torch vs TF    :", np.allclose(out_torch, tensorflow_run().numpy(), atol=1e-4))
 print("Torch vs OpenVINO:", np.allclose(out_torch, openvino_run(n_runs=1)[0], atol=1e-4))
 # print("Torch vs TVM   :", np.allclose(out_torch, tvm_run(n_runs=1)[0], atol=1e-4))
@@ -190,6 +198,7 @@ print(f"[PyTorch]      {timed_avg(torch_run)*1000:.3f} ms")
 print(f"[NumPy]        {timed_avg(numpy_run)*1000:.3f} ms")
 print(f"[SciPy Sparse] {timed_avg(scipy_run)*1000:.3f} ms")
 print(f"[Custom]       {timed_avg(custom_run)*1000:.3f} ms")
+print(f"[Custom Sparse]{timed_avg(custom_sparse_run)*1000:.3f} ms")
 print(f"[TensorFlow]   {timed_avg(tensorflow_run)*1000:.3f} ms")
 print(f"[OpenVINO]      {openvino_run()[1]:.3f} ms")
 # print(f"[TVM]          {tvm_run()[1]:.3f} ms")
