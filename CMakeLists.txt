@@ -75,7 +75,9 @@ add_library(sparseops_backend MODULE
     src/sparse_matvec_mt.cpp
     src/sparse_dispatch.cpp
     src/sparse_preproc.cpp
-    src/dense_block_kernel.cpp)
+    src/dense_block_kernel.cpp
+    src/quasi_dense_encoder.cpp
+    src/bilinear_diagonal_matvec.cpp)
 target_include_directories(sparseops_backend PRIVATE ${PYBIND11_INCLUDES})
 # Naming: produce "sparseops_backend.so" directly
 set_target_properties(sparseops_backend PROPERTIES

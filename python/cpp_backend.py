@@ -51,3 +51,37 @@ def run_sparse_matvec(bcoo, bias: np.ndarray, input_tensor: np.ndarray, threads:
         (M,) torch.Tensor
     """
     return sparseops_backend.sparse_matvec_avx512_mt(bcoo, input_tensor, bias, threads)
+
+def run_bilinear_diagonal_matvec(Q, X, bias: np.ndarray, threads: int) -> np.ndarray:
+    """
+    Bilinear diagonal matrix-vector multiplication using the C++ backend.
+    Args:
+        Q: QuasiDense object
+        X: XtDense object
+        bias: (M,) torch.Tensor
+        threads: int, number of threads to use
+    Returns:
+        (M,) torch.Tensor
+    """
+    return sparseops_backend.bilinear_diagonal_matvec_mt(Q, X, bias, threads)
+
+def encode_to_quasi_dense(sparse_matrix: np.ndarray) -> sparseops_backend.QuasiDense:
+    """
+    Convert a sparse matrix to a quasi-dense representation.
+    Args:
+        sparse_matrix: (M, K) numpy.ndarray
+    Returns:
+        QuasiDense object
+    """
+    return sparseops_backend.convert_to_quasi_dense(sparse_matrix)
+
+def transform_input(quasi_dense: sparseops_backend.QuasiDense, input_vector: np.ndarray) -> np.ndarray:
+    """
+    Transform an input vector using a quasi-dense representation.
+    Args:
+        quasi_dense: QuasiDense object
+        input_vector: (K,) numpy.ndarray
+    Returns:
+        Transformed input vector as XtDense object
+    """
+    return sparseops_backend.transform_input(quasi_dense, input_vector)

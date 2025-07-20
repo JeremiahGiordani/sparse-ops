@@ -10,6 +10,8 @@
 #include "sparse_matvec_mt.hpp"  // for multithreaded version
 #include "sparse_dispatch.hpp"  
 #include "dense_block_kernel.hpp"  // for dense_block_kernel
+#include "quasi_dense_encoder.hpp"  // for quasi-dense encoding
+#include "bilinear_diagonal_matvec.hpp"  // for quasi_dense_matvec_mt
 
 
 namespace py = pybind11;
@@ -72,6 +74,50 @@ static py::array_t<float> decode_from_bcoo16_py(const BCOO16& bcoo)
     return out;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Encode to quasi-dense format
+static QuasiDense convert_to_quasi_dense_py(
+    py::array_t<float, py::array::c_style | py::array::forcecast> W)
+{
+    auto buf = W.request();
+    const float* data = static_cast<float*>(buf.ptr);
+    uint32_t m = buf.shape[0];
+    uint32_t n = buf.shape[1];  // m rows, n columns
+    return convert_to_quasi_dense(data, m, n);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Decode from quasi-dense format
+// Function takes in only quasi-dense handle and constructs output buffer.
+static py::array_t<float> decode_from_quasi_dense_py(
+    const QuasiDense& Q)
+{
+    // Create output buffer of size m*n
+    py::array_t<float> W_out({Q.m, Q.n});
+    // Fill it with zeros
+    std::fill(W_out.mutable_data(), W_out.mutable_data() + size_t(Q.m) * Q.n, 0.0f);
+
+    auto buf = W_out.request();
+    if (buf.size != size_t(Q.m) * Q.n) {
+        throw std::runtime_error("Output buffer size mismatch");
+    }
+    decode_from_quasi_dense(Q, static_cast<float*>(buf.ptr));
+    return W_out;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Transform input vector x into XtDense format
+static XtDense transform_input_py(
+    const QuasiDense& Q,
+    py::array_t<float, py::array::c_style | py::array::forcecast> x)
+{
+    auto buf = x.request();
+    if (buf.size != Q.n) {
+        throw std::runtime_error("Input vector size mismatch");
+    }
+    return transform_input(Q, static_cast<float*>(buf.ptr));
+}
+
 
 // ─────────────────────────────────────────────────────────────────────────────
 PYBIND11_MODULE(sparseops_backend, m)
@@ -79,12 +125,12 @@ PYBIND11_MODULE(sparseops_backend, m)
     m.doc() = "Sparse CPU kernels (BCOO-16)";
 
     // - ─ BCOO16Block handle ────────────────────────────────────────────────
-py::class_<BCOO16Block>(m, "BCOO16Block")
-    .def(py::init<>())
-    .def_readwrite("row_id", &BCOO16Block::row_id)
-    .def_readwrite("first_col", &BCOO16Block::first_col)
-    .def_readwrite("bitmask", &BCOO16Block::bitmask)
-    .def_readwrite("val_off", &BCOO16Block::val_off);
+    py::class_<BCOO16Block>(m, "BCOO16Block")
+        .def(py::init<>())
+        .def_readwrite("row_id", &BCOO16Block::row_id)
+        .def_readwrite("first_col", &BCOO16Block::first_col)
+        .def_readwrite("bitmask", &BCOO16Block::bitmask)
+        .def_readwrite("val_off", &BCOO16Block::val_off);
 
     // — BCOO16 handle —
     py::class_<BCOO16>(m, "BCOO16")
@@ -108,6 +154,34 @@ py::class_<BCOO16Block>(m, "BCOO16Block")
             [](const BCOO16& b) {
                 return py::array_t<float>(
                     b.values.size(), b.values.data());
+            });
+
+    // — QuasiDense handle —
+    py::class_<QuasiDense>(m, "QuasiDense")
+        .def(py::init<>())
+        .def_readwrite("m", &QuasiDense::m)
+        .def_readwrite("n", &QuasiDense::n)
+        .def_readwrite("r", &QuasiDense::r)
+        .def_property_readonly("Wd",
+            [](const QuasiDense& Q) {
+                return py::array_t<float>(
+                    Q.Wd.size(), Q.Wd.data());
+            })
+        .def_property_readonly("idx",
+            [](const QuasiDense& Q) {
+                return py::array_t<uint32_t>(
+                    Q.idx.size(), Q.idx.data());
+            });
+
+    // — XtDense handle —
+    py::class_<XtDense>(m, "XtDense")
+        .def(py::init<>())
+        .def_readwrite("m", &XtDense::m)
+        .def_readwrite("r", &XtDense::r)
+        .def_property_readonly("Xt",
+            [](const XtDense& X) {
+                return py::array_t<float>(
+                    X.Xt.size(), X.Xt.data());
             });
 
     // — API surface —
@@ -155,4 +229,28 @@ py::class_<BCOO16Block>(m, "BCOO16Block")
           return y;
       },
       "Baseline dense y = A·x + b (blocked AVX-512)");
+      m.def("convert_to_quasi_dense", &convert_to_quasi_dense_py,
+            "Convert dense NumPy matrix → QuasiDense handle");
+      m.def("decode_from_quasi_dense", &decode_from_quasi_dense_py,
+            "Convert QuasiDense handle → dense NumPy matrix");
+      m.def("transform_input", &transform_input_py,
+            "Transform input vector x into XtDense format");
+      m.def("bilinear_diagonal_matvec_mt",
+            [](const QuasiDense& Q,
+               const XtDense& X,
+               py::array_t<float> bias,
+               int threads) {
+                auto buf_bias = bias.request();
+                py::array_t<float> y(Q.m);
+                auto buf_y = y.request();
+
+                quasi_dense_matvec_mt(
+                    Q,
+                    X,
+                    static_cast<float*>(buf_bias.ptr),
+                    static_cast<float*>(buf_y.ptr),
+                    threads);
+                return y;
+            },
+            "Multithreaded bilinear diagonal matvec (quasi-dense)");
 }
