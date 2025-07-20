@@ -5,7 +5,8 @@ import torch
 from pathlib import Path
 
 # Import the new pybind11 backend
-sparseops_backend = importlib.import_module("sparseops_backend")
+# sparseops_backend = importlib.import_module("sparseops_backend")
+import sparseops_backend
 
 def run_matvec(weight: np.ndarray, bias: np.ndarray, input_tensor: np.ndarray) -> np.ndarray:
     """

@@ -31,7 +31,8 @@ KernelFn get_or_build_kernel(const std::string& key,
     std::lock_guard<std::mutex> lk(cache_mu);
 
     fs::path so_path = cache_dir() / (key + ".so");
-    if (fs::exists(so_path)) {
+    // enable manually disabling cache hits
+    if (fs::exists(so_path) && !std::getenv("SPARSEOPS_NO_CACHE")) {
         if (std::getenv("SPARSEOPS_VERBOSE"))
             std::cerr << "[sparseops] HIT  \"" << so_path << "\"\n";
         return reinterpret_cast<KernelFn>(
