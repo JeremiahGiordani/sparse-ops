@@ -1,28 +1,28 @@
-// include/quasi_dense_encoder.hpp
 #pragma once
-
 #include <vector>
 #include <cstdint>
+#include "aligned_buffer.hpp"
 
-/// Packed “quasi‑dense” representation.
-/// Rows of the original m×n matrix are collapsed into m rows × r columns,
-/// where r = max non‑zeros per row.
-/// - Wd[i*r + j]: jth non‑zero value of row i (or zero padding).
-/// - idx[i*r + j]: original column index of that value.
 struct QuasiDense {
-    uint32_t m;          ///< number of rows
-    uint32_t n;          ///< original number of columns
-    uint32_t r;          ///< max non‑zeros per row
-    std::vector<float>  Wd;  ///< packed non‑zero values (size m*r)
-    std::vector<uint32_t> idx; ///< original column indices (size m*r)
+    uint32_t m, n, r;
+    AlignedBuffer Wd;               // aligned m*r floats
+    std::vector<uint32_t> idx;      // m*r indices
+
+    QuasiDense(uint32_t _m, uint32_t _n, uint32_t _r)
+      : m(_m), n(_n), r(_r),
+        Wd(size_t(_m) * _r),
+        idx(size_t(_m) * _r)
+    {}
 };
 
-/// Transformed input: for each row i, a contiguous block of r values:
-/// Xt[i*r + j] = x[ idx[i*r + j] ].
 struct XtDense {
-    uint32_t m;
-    uint32_t r;
-    std::vector<float> Xt; ///< gathered x values (size m*r)
+    uint32_t m, r;
+    AlignedBuffer Xt;               // aligned m*r floats
+
+    XtDense(uint32_t _m, uint32_t _r)
+      : m(_m), r(_r),
+        Xt(size_t(_m) * _r)
+    {}
 };
 
 /// Encode a dense m×n matrix into quasi‑dense form.

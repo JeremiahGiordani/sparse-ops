@@ -158,31 +158,53 @@ PYBIND11_MODULE(sparseops_backend, m)
 
     // — QuasiDense handle —
     py::class_<QuasiDense>(m, "QuasiDense")
-        .def(py::init<>())
-        .def_readwrite("m", &QuasiDense::m)
-        .def_readwrite("n", &QuasiDense::n)
-        .def_readwrite("r", &QuasiDense::r)
-        .def_property_readonly("Wd",
-            [](const QuasiDense& Q) {
-                return py::array_t<float>(
-                    Q.Wd.size(), Q.Wd.data());
-            })
-        .def_property_readonly("idx",
-            [](const QuasiDense& Q) {
-                return py::array_t<uint32_t>(
-                    Q.idx.size(), Q.idx.data());
-            });
+        .def_readonly("m", &QuasiDense::m)
+        .def_readonly("n", &QuasiDense::n)
+        .def_readonly("r", &QuasiDense::r)
+        // Wd is m×r floats, contiguous in row-major
+        .def_property_readonly("Wd", [](const QuasiDense &Q) {
+            // shape: {rows=m, cols=r}
+            std::array<ssize_t,2> shape   = { (ssize_t)Q.m, (ssize_t)Q.r };
+            // strides: bytes to skip to next row, then next column
+            std::array<ssize_t,2> strides = {
+                sizeof(float) * Q.r,
+                sizeof(float)
+            };
+            return py::array_t<float>(
+                shape, strides,
+                Q.Wd.ptr    // pointer to first element
+            );
+        })
+        // idx is the same shape, uint32_t
+        .def_property_readonly("idx", [](const QuasiDense &Q) {
+            std::array<ssize_t,2> shape   = { (ssize_t)Q.m, (ssize_t)Q.r };
+            std::array<ssize_t,2> strides = {
+                sizeof(uint32_t) * Q.r,
+                sizeof(uint32_t)
+            };
+            return py::array_t<uint32_t>(
+                shape, strides,
+                Q.idx.data()
+            );
+        });
 
-    // — XtDense handle —
+    // XtDense — same pattern
     py::class_<XtDense>(m, "XtDense")
-        .def(py::init<>())
-        .def_readwrite("m", &XtDense::m)
-        .def_readwrite("r", &XtDense::r)
-        .def_property_readonly("Xt",
-            [](const XtDense& X) {
-                return py::array_t<float>(
-                    X.Xt.size(), X.Xt.data());
-            });
+        .def_readonly("m", &XtDense::m)
+        .def_readonly("r", &XtDense::r)
+        .def_property_readonly("Xt", [](const XtDense &X) {
+            std::array<ssize_t,2> shape   = { (ssize_t)X.m, (ssize_t)X.r };
+            std::array<ssize_t,2> strides = {
+                sizeof(float) * X.r,
+                sizeof(float)
+            };
+            return py::array_t<float>(
+                shape, strides,
+                X.Xt.ptr
+            );
+        });
+
+
 
     // — API surface —
     m.def("encode_to_bcoo16",  &encode_to_bcoo16_py,
