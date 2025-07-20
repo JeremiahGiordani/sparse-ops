@@ -12,13 +12,7 @@ check_cxx_compiler_flag("-mavx512f" HAVE_AVX512F)
 check_cxx_compiler_flag("-mavx2"    HAVE_AVX2)
 
 set(SIMD_FLAGS "")
-if (HAVE_AVX512F)
-    list(APPEND SIMD_FLAGS "-mavx512f")
-endif()
-if (HAVE_AVX2)
-    list(APPEND SIMD_FLAGS "-mavx2")
-endif()
-list(APPEND SIMD_FLAGS "-mfma")
+list(APPEND SIMD_FLAGS "-march=native")
 
 # ──────────────────────────────────────────────────────────────
 #  Optional OpenMP
