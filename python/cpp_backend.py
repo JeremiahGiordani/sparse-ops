@@ -3,6 +3,7 @@ import numpy as np
 import platform
 import torch
 from pathlib import Path
+from typing import overload
 
 # Import the new pybind11 backend
 # sparseops_backend = importlib.import_module("sparseops_backend")
@@ -62,16 +63,14 @@ def encode_to_quasi_dense(sparse_matrix: np.ndarray) -> sparseops_backend.QuasiD
     """
     return sparseops_backend.convert_to_quasi_dense(sparse_matrix)
 
-def transform_input(quasi_dense: sparseops_backend.QuasiDense, input_vector: np.ndarray) -> np.ndarray:
+def transform_input(quasi_dense: sparseops_backend.QuasiDense, input_vector: np.ndarray) -> None:
     """
     Transform an input vector using a quasi-dense representation.
     Args:
         quasi_dense: QuasiDense object
         input_vector: (K,) numpy.ndarray
-    Returns:
-        Transformed input vector as XtDense object
     """
-    return sparseops_backend.transform_input(quasi_dense, input_vector)
+    sparseops_backend.transform_input(quasi_dense, input_vector)
 
 def run_quasi_dense_matvec_gather(quasi_dense: sparseops_backend.QuasiDense, input_vector: np.ndarray, bias: np.ndarray, threads: int) -> np.ndarray:
     """
@@ -86,10 +85,9 @@ def run_quasi_dense_matvec_gather(quasi_dense: sparseops_backend.QuasiDense, inp
     """
     return sparseops_backend.quasi_dense_matvec_gather(quasi_dense, input_vector, bias, threads)
 
-
-def run_bilinear_diagonal_matvec(Q, x, bias: np.ndarray, threads: int) -> np.ndarray:
-    """
-    Bilinear diagonal matrix-vector multiplication using the C++ backend.
+@overload
+def run_bilinear_diagonal_matvec(Q: sparseops_backend.QuasiDense, x: np.ndarray, bias: np.ndarray, threads: int) -> np.ndarray: ...
+""" Bilinear diagonal matrix-vector multiplication using the C++ backend.
     Args:
         Q: QuasiDense object (m, n)
         X: XtDense object OR (n,) np.ndarray
@@ -98,7 +96,31 @@ def run_bilinear_diagonal_matvec(Q, x, bias: np.ndarray, threads: int) -> np.nda
     Returns:
         (m,) torch.Tensor
     """
-    return sparseops_backend.bilinear_diagonal_matvec_mt(Q, x, bias, threads)
+
+@overload
+def run_bilinear_diagonal_matvec(Q: sparseops_backend.QuasiDense, bias: np.ndarray, threads: int) -> np.ndarray: ...
+""" Bilinear diagonal matrix-vector multiplication using the C++ backend.
+    Args:
+        Q: QuasiDense object (m, n), with Xt already set.
+        bias: (m,) torch.Tensor
+        threads: int, number of threads to use
+    Returns:
+        (m,) torch.Tensor
+    """
+
+def run_bilinear_diagonal_matvec(Q, *args):
+    """
+    Dispatches to the correct bilinear diagonal matvec based on arguments.
+    """
+    if len(args) == 3:
+        x, bias, threads = args
+        return sparseops_backend.bilinear_diagonal_matvec_mt(Q, x, bias, threads)
+    elif len(args) == 2:
+        bias, threads = args
+        return sparseops_backend.bilinear_diagonal_matvec_mt(Q, bias, threads)
+    else:
+        raise TypeError("Invalid arguments to run_bilinear_diagonal_matvec")
+
 
 
 def run_quasi_dense_matvec_hidden(Q: sparseops_backend.QuasiDense, Q_next: sparseops_backend.QuasiDense, x: np.ndarray, bias: np.ndarray, threads: int) -> np.ndarray:
@@ -111,6 +133,20 @@ def run_quasi_dense_matvec_hidden(Q: sparseops_backend.QuasiDense, Q_next: spars
         bias: Bias vector (m,)
         threads: int, number of threads to use
     Returns:
-        (m,) numpy.ndarray
+        None - the result is stored in Q_next.Xt
     """
-    return sparseops_backend.quasi_dense_matvec_hidden(Q, Q_next, x, bias, threads)
+    sparseops_backend.quasi_dense_matvec_hidden(Q, Q_next, x, bias, threads)
+
+def run_quasi_dense_matvec_hidden(Q: sparseops_backend.QuasiDense, Q_next: sparseops_backend.QuasiDense, bias: np.ndarray, threads: int) -> np.ndarray:
+    """
+    Perform hidden-layer fused quasi-dense matrix-vector multiplication.
+    Args:
+        Q: QuasiDense object (m, n), with Xt already set.
+        Q_next: QuasiDense object for the next layer (n, k)
+        x: Input tensor (XtDense or (n,))
+        bias: Bias vector (m,)
+        threads: int, number of threads to use
+    Returns:
+        None - the result is stored in Q_next.Xt
+    """
+    sparseops_backend.quasi_dense_matvec_hidden(Q, Q_next, bias, threads)
