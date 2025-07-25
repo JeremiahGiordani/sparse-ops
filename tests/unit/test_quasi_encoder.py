@@ -56,12 +56,12 @@ def test_quasi_dense_encoder_correctly_sets_wd_on_manual_input():
     quasi_dense = sparseops_backend.convert_to_quasi_dense(matrix)
     # Check if the quasi-dense representation has correct wd
     print(quasi_dense.Wd)
-    assert quasi_dense.Wd.shape == (8,) # 4 rows * 2 columns = 8 elements
-    assert quasi_dense.Wd[0] == 1.0
-    assert quasi_dense.Wd[1] == 2.0
-    assert quasi_dense.Wd[2] == 3.0
-    assert quasi_dense.Wd[3] == 0.0 # padding
-    assert quasi_dense.Wd[4] == 4.0
+    assert quasi_dense.Wd.shape == (4,2) # 4 rows * 2 columns = 8 elements
+    assert quasi_dense.Wd[0, 0] == 1.0
+    assert quasi_dense.Wd[0, 1] == 2.0
+    assert quasi_dense.Wd[1, 0] == 3.0
+    assert quasi_dense.Wd[1, 1] == 0.0 # padding
+    assert quasi_dense.Wd[2, 0] == 4.0
 
 def test_quasi_dense_encoder_sets_column_indices_correctly():
     matrix = np.array([[1, 0, 0, 2],
@@ -70,9 +70,11 @@ def test_quasi_dense_encoder_sets_column_indices_correctly():
                        [0, 0, 0, 5]], dtype=np.float32)
     quasi_dense = sparseops_backend.convert_to_quasi_dense(matrix)
     # Check if the column indices are set correctly
-    assert quasi_dense.idx.shape == (8,)
-    assert np.array_equal(quasi_dense.idx[:4], [0, 3, 1, 0]) # Last value is padding, col idx 0
-    assert np.array_equal(quasi_dense.idx[4:], [2, 0, 3, 0]) # Second and fourth values are padding
+    assert quasi_dense.idx.shape == (4, 2)
+    assert np.array_equal(quasi_dense.idx[0], [0, 3])
+    assert np.array_equal(quasi_dense.idx[1], [1, 0])
+    assert np.array_equal(quasi_dense.idx[2], [2, 0])
+    assert np.array_equal(quasi_dense.idx[3], [3, 0])
 
 def test_quasi_dense_encoder_handles_non_square_matrices():
     M, K = 64, 32
@@ -132,11 +134,14 @@ def test_transform_input_with_manual_input():
     input_vec = np.array([1.0, 2.0, 3.0, 4.0], dtype=np.float32)
     transformed = sparseops_backend.transform_input(quasi_dense, input_vec)
 
+    expected_transformed = np.array([[1.0, 4.0],[2.0, 1.0],
+                                     [3.0, 1.0],[4.0, 1.0]], dtype=np.float32)
+
     # Check if the transformed input has correct values
     assert transformed.m == 4
     assert transformed.r == 2
-    assert np.array_equal(transformed.Xt[:4], [1.0, 4.0, 2.0, 1.0])
-    assert np.array_equal(transformed.Xt[4:], [3.0, 1.0, 4.0, 1.0])  # Column indices for the non-zero elements
+    assert transformed.Xt.shape == (4, 2)
+    assert np.allclose(transformed.Xt, expected_transformed, atol=1e-5)
 
 def test_manual_multiplication_with_objects_equals_expected():
     M, K = 7, 7
@@ -149,9 +154,8 @@ def test_manual_multiplication_with_objects_equals_expected():
     # Perform manual multiplication
     result = np.zeros(M, dtype=np.float32)
     for i in range(M):
-        curr_idx = i * transformed.r
         for j in range(transformed.r):
-            result[i] += transformed.Xt[curr_idx + j] * quasi_dense.Wd[curr_idx + j]
+            result[i] += transformed.Xt[i, j] * quasi_dense.Wd[i, j]
 
     # Compare with the expected result
     expected = sparse_matrix @ input_vec

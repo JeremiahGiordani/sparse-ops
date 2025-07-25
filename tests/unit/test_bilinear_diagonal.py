@@ -49,6 +49,7 @@ def test_bilinear_diagonal_multiplication_shape():
     (10, 10, 0.0),  # Dense matrix
     (10, 10, 0.5),  # Sparse matrix
     (10, 10, 0.9),  # Very sparse matrix
+    (20, 20, 0.2),
     (100, 100, 0.2),  # Moderate sparsity
     (1000, 1000, 0.1),  # Large matrix
     (500, 500, 0.05),  # Large sparse matrix

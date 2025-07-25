@@ -52,19 +52,6 @@ def run_sparse_matvec(bcoo, bias: np.ndarray, input_tensor: np.ndarray, threads:
     """
     return sparseops_backend.sparse_matvec_avx512_mt(bcoo, input_tensor, bias, threads)
 
-def run_bilinear_diagonal_matvec(Q, X, bias: np.ndarray, threads: int) -> np.ndarray:
-    """
-    Bilinear diagonal matrix-vector multiplication using the C++ backend.
-    Args:
-        Q: QuasiDense object
-        X: XtDense object
-        bias: (M,) torch.Tensor
-        threads: int, number of threads to use
-    Returns:
-        (M,) torch.Tensor
-    """
-    return sparseops_backend.bilinear_diagonal_matvec_mt(Q, X, bias, threads)
-
 def encode_to_quasi_dense(sparse_matrix: np.ndarray) -> sparseops_backend.QuasiDense:
     """
     Convert a sparse matrix to a quasi-dense representation.
@@ -85,3 +72,45 @@ def transform_input(quasi_dense: sparseops_backend.QuasiDense, input_vector: np.
         Transformed input vector as XtDense object
     """
     return sparseops_backend.transform_input(quasi_dense, input_vector)
+
+def run_quasi_dense_matvec_gather(quasi_dense: sparseops_backend.QuasiDense, input_vector: np.ndarray, bias: np.ndarray, threads: int) -> np.ndarray:
+    """
+    Perform matrix-vector multiplication on-the-fly using quasi-dense representation.
+    Args:
+        quasi_dense: QuasiDense object
+        input_vector: (K,) numpy.ndarray
+        bias: (M,) numpy.ndarray
+        threads: int, number of threads to use
+    Returns:
+        (M,) numpy.ndarray
+    """
+    return sparseops_backend.quasi_dense_matvec_gather(quasi_dense, input_vector, bias, threads)
+
+
+def run_bilinear_diagonal_matvec(Q, x, bias: np.ndarray, threads: int) -> np.ndarray:
+    """
+    Bilinear diagonal matrix-vector multiplication using the C++ backend.
+    Args:
+        Q: QuasiDense object (m, n)
+        X: XtDense object OR (n,) np.ndarray
+        bias: (m,) torch.Tensor
+        threads: int, number of threads to use
+    Returns:
+        (m,) torch.Tensor
+    """
+    return sparseops_backend.bilinear_diagonal_matvec_mt(Q, x, bias, threads)
+
+
+def run_quasi_dense_matvec_hidden(Q: sparseops_backend.QuasiDense, Q_next: sparseops_backend.QuasiDense, x: np.ndarray, bias: np.ndarray, threads: int) -> np.ndarray:
+    """
+    Perform hidden-layer fused quasi-dense matrix-vector multiplication.
+    Args:
+        Q: QuasiDense object (m, n)
+        Q_next: QuasiDense object for the next layer (n, k)
+        x: Input tensor (XtDense or (n,))
+        bias: Bias vector (m,)
+        threads: int, number of threads to use
+    Returns:
+        (m,) numpy.ndarray
+    """
+    return sparseops_backend.quasi_dense_matvec_hidden(Q, Q_next, x, bias, threads)
