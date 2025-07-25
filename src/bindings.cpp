@@ -259,16 +259,36 @@ PYBIND11_MODULE(sparseops_backend, m)
             "Transform input vector x into XtDense format");
       m.def("bilinear_diagonal_matvec_mt",
             [](const QuasiDense& Q,
-               const XtDense& X,
+               py::array_t<float> x,
                py::array_t<float> bias,
                int threads) {
                 auto buf_bias = bias.request();
+                auto buf_x = x.request();
                 py::array_t<float> y(Q.m);
                 auto buf_y = y.request();
 
                 quasi_dense_matvec_mt(
                     Q,
-                    X,
+                    static_cast<float*>(buf_x.ptr),
+                    static_cast<float*>(buf_bias.ptr),
+                    static_cast<float*>(buf_y.ptr),
+                    threads);
+                return y;
+            },
+            "Multithreaded bilinear diagonal matvec (quasi-dense)");
+        m.def("quasi_dense_matvec_gather",
+            [](const QuasiDense& Q,
+               py::array_t<float> x,
+               py::array_t<float> bias,
+               int threads) {
+                auto buf_x = x.request();
+                auto buf_bias = bias.request();
+                py::array_t<float> y(Q.m);
+                auto buf_y = y.request();
+
+                quasi_dense_matvec_gather(
+                    Q,
+                    static_cast<float*>(buf_x.ptr),
                     static_cast<float*>(buf_bias.ptr),
                     static_cast<float*>(buf_y.ptr),
                     threads);

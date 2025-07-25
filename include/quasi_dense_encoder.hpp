@@ -7,11 +7,15 @@ struct QuasiDense {
     uint32_t m, n, r;
     AlignedBuffer Wd;               // aligned m*r floats
     std::vector<uint32_t> idx;      // m*r indices
+    AlignedBuffer Xt;               // size m*r
+    std::vector<uint32_t>   nnz; ///< size m
 
     QuasiDense(uint32_t _m, uint32_t _n, uint32_t _r)
       : m(_m), n(_n), r(_r),
         Wd(size_t(_m) * _r),
-        idx(size_t(_m) * _r)
+        idx(size_t(_m) * _r),
+        Xt(size_t(_m) * _r),
+        nnz(_m)
     {}
 };
 
@@ -34,3 +38,5 @@ void decode_from_quasi_dense(const QuasiDense& Q, float* W_out);
 
 /// Transform input vector x (length n) into XtDense (m×r).
 XtDense transform_input(const QuasiDense& Q, const float* x);
+
+void copy_input_to_Xt(const QuasiDense& Q, const float* x);
