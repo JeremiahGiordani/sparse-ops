@@ -20,13 +20,11 @@ void quasi_dense_matvec_mt(
 
 /// Perform quasi‑dense mat‑vec: y_i = bias_i + dot( Q.Wd[i, :], X.Xt[i, :] )
 /// - Q: quasi‑dense representation (m×r)
-/// - X: transformed input (m×r)
 /// - bias: length m (if nullptr, y is zero‑initialized)
 /// - y: output buffer length m
 /// - threads: number of OpenMP threads (0 = automatic)
 void quasi_dense_matvec_mt(
     const QuasiDense& Q,
-    const XtDense&   X,
     const float*     bias,
     float*           y,
     int              threads = 0
@@ -62,7 +60,6 @@ void quasi_dense_matvec_hidden_mt(
     const QuasiDense& Q_next,
     const float*      x,
     const float*      bias,
-    float*            yXt,
     int               threads = 0
 );
 
@@ -70,7 +67,6 @@ void quasi_dense_matvec_hidden_mt(
 /// Hidden‑layer fused quasi‑dense mat‑vec:
 /// - Q: quasi‑dense representation (m×r)
 /// - Q_next: next layer's quasi‑dense representation (m×r)
-/// - X: transformed input (m×r)
 /// - bias: length m (if nullptr, y is zero‑initialized)
 /// - yXt: output buffer length Q_next.m * Q_next.r
 /// - threads: number of OpenMP threads (0 = automatic)
@@ -79,8 +75,6 @@ void quasi_dense_matvec_hidden_mt(
 void quasi_dense_matvec_hidden_mt(
     const QuasiDense& Q,
     const QuasiDense& Q_next,
-    const XtDense&    X,
     const float*      bias,
-    float*            yXt,
     int               threads
 );

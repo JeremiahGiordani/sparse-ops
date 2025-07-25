@@ -107,7 +107,7 @@ static py::array_t<float> decode_from_quasi_dense_py(
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Transform input vector x into XtDense format
-static XtDense transform_input_py(
+static void transform_input_py(
     const QuasiDense& Q,
     py::array_t<float, py::array::c_style | py::array::forcecast> x)
 {
@@ -115,7 +115,7 @@ static XtDense transform_input_py(
     if (buf.size != Q.n) {
         throw std::runtime_error("Input vector size mismatch");
     }
-    return transform_input(Q, static_cast<float*>(buf.ptr));
+    transform_input(Q, static_cast<float*>(buf.ptr));
 }
 
 
@@ -185,6 +185,17 @@ PYBIND11_MODULE(sparseops_backend, m)
             return py::array_t<uint32_t>(
                 shape, strides,
                 Q.idx.data()
+            );
+        })
+        .def_property_readonly("Xt", [](const QuasiDense &Q) {
+            std::array<ssize_t,2> shape   = { (ssize_t)Q.m, (ssize_t)Q.r };
+            std::array<ssize_t,2> strides = {
+                sizeof(float) * Q.r,
+                sizeof(float)
+            };
+            return py::array_t<float>(
+                shape, strides,
+                Q.Xt.ptr 
             );
         });
 
@@ -260,6 +271,7 @@ PYBIND11_MODULE(sparseops_backend, m)
 
 
     // 1) Standard matvec from raw x
+    // Stores result in y, which must be preallocated.
     m.def("bilinear_diagonal_matvec_mt",
         [](const QuasiDense &Q,
         py::array_t<float> x_arr,
@@ -284,7 +296,6 @@ PYBIND11_MODULE(sparseops_backend, m)
     // 2) Standard matvec from pre‑transformed Xt
     m.def("bilinear_diagonal_matvec_mt",
         [](const QuasiDense &Q,
-        const XtDense   &X,
         py::array_t<float> bias_arr,
         int threads) {
             auto buf_bias = bias_arr.request();
@@ -293,7 +304,6 @@ PYBIND11_MODULE(sparseops_backend, m)
 
             quasi_dense_matvec_mt(
                 Q,
-                X,
                 static_cast<float*>(buf_bias.ptr),
                 static_cast<float*>(buf_y.ptr),
                 threads
@@ -303,6 +313,7 @@ PYBIND11_MODULE(sparseops_backend, m)
         "Multithreaded bilinear diagonal matvec (pre‑transformed input)");
 
     // 3) Hidden‑layer fused matvec from raw x → yXt
+    // Stored ouput in Q_next.Xt, void return.
     m.def("bilinear_diagonal_matvec_hidden_mt",
         [](const QuasiDense &Q,
         const QuasiDense &Q_next,
@@ -311,23 +322,14 @@ PYBIND11_MODULE(sparseops_backend, m)
         int threads) {
             auto buf_x    = x_arr.request();
             auto buf_bias = bias_arr.request();
-            // allocate yXt = next.m × next.r
-            std::array<ssize_t,2> shape = {
-                (ssize_t)Q_next.m,
-                (ssize_t)Q_next.r
-            };
-            py::array_t<float> yXt_arr(shape);
-            auto buf_yXt = yXt_arr.request();
 
             quasi_dense_matvec_hidden_mt(
                 Q,
                 Q_next,
                 static_cast<float*>(buf_x.ptr),
                 static_cast<float*>(buf_bias.ptr),
-                static_cast<float*>(buf_yXt.ptr),
                 threads
             );
-            return yXt_arr;
         },
         "Fused hidden‑layer matvec (raw input)");
 
@@ -335,26 +337,16 @@ PYBIND11_MODULE(sparseops_backend, m)
     m.def("bilinear_diagonal_matvec_hidden_mt",
         [](const QuasiDense &Q,
         const QuasiDense &Q_next,
-        const XtDense    &X,
         py::array_t<float> bias_arr,
         int threads) {
             auto buf_bias = bias_arr.request();
-            std::array<ssize_t,2> shape = {
-                (ssize_t)Q_next.m,
-                (ssize_t)Q_next.r
-            };
-            py::array_t<float> yXt_arr(shape);
-            auto buf_yXt = yXt_arr.request();
 
             quasi_dense_matvec_hidden_mt(
                 Q,
                 Q_next,
-                X,
                 static_cast<float*>(buf_bias.ptr),
-                static_cast<float*>(buf_yXt.ptr),
                 threads
             );
-            return yXt_arr;
         },
         "Fused hidden‑layer matvec (pre‑transformed input)");
 

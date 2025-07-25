@@ -104,13 +104,13 @@ def test_transform_input_shape():
     quasi_dense = sparseops_backend.convert_to_quasi_dense(sparse_matrix)
 
     input_vec = np.random.randn(32).astype(np.float32)
-    transformed = sparseops_backend.transform_input(quasi_dense, input_vec)
+    sparseops_backend.transform_input(quasi_dense, input_vec)
+    transformed = quasi_dense.Xt
 
     print(transformed)
 
     # Check if the transformed input has correct shape
-    assert transformed.m == M
-    assert transformed.r == np.max(np.count_nonzero(sparse_matrix, axis=1))
+    assert transformed.shape == (M, np.max(np.count_nonzero(sparse_matrix, axis=1)))
 
 def test_transform_input_shape_with_empty_matrix():
     M, K = 32, 32
@@ -118,11 +118,11 @@ def test_transform_input_shape_with_empty_matrix():
     quasi_dense = sparseops_backend.convert_to_quasi_dense(sparse_matrix)
 
     input_vec = np.random.randn(32).astype(np.float32)
-    transformed = sparseops_backend.transform_input(quasi_dense, input_vec)
+    sparseops_backend.transform_input(quasi_dense, input_vec)
+    transformed = quasi_dense.Xt
 
     # Check if the transformed input has correct shape
-    assert transformed.m == M
-    assert transformed.r == 0  # No non-zero elements in the matrix
+    assert transformed.shape == (M,0)
 
 def test_transform_input_with_manual_input():
     matrix = np.array([[1, 0, 0, 2],
@@ -132,16 +132,15 @@ def test_transform_input_with_manual_input():
     quasi_dense = sparseops_backend.convert_to_quasi_dense(matrix)
 
     input_vec = np.array([1.0, 2.0, 3.0, 4.0], dtype=np.float32)
-    transformed = sparseops_backend.transform_input(quasi_dense, input_vec)
+    sparseops_backend.transform_input(quasi_dense, input_vec)
+    transformed = quasi_dense.Xt
 
-    expected_transformed = np.array([[1.0, 4.0],[2.0, 1.0],
-                                     [3.0, 1.0],[4.0, 1.0]], dtype=np.float32)
+    expected_transformed = np.array([[1.0, 4.0],[2.0, 0.0],
+                                     [3.0, 0.0],[4.0, 0.0]], dtype=np.float32)
 
     # Check if the transformed input has correct values
-    assert transformed.m == 4
-    assert transformed.r == 2
-    assert transformed.Xt.shape == (4, 2)
-    assert np.allclose(transformed.Xt, expected_transformed, atol=1e-5)
+    assert transformed.shape == (4, 2)
+    assert np.allclose(transformed, expected_transformed, atol=1e-5)
 
 def test_manual_multiplication_with_objects_equals_expected():
     M, K = 7, 7
@@ -149,13 +148,14 @@ def test_manual_multiplication_with_objects_equals_expected():
     quasi_dense = sparseops_backend.convert_to_quasi_dense(sparse_matrix)
 
     input_vec = np.random.randn(K).astype(np.float32)
-    transformed = sparseops_backend.transform_input(quasi_dense, input_vec)
+    sparseops_backend.transform_input(quasi_dense, input_vec)
+    transformed = quasi_dense.Xt
 
     # Perform manual multiplication
     result = np.zeros(M, dtype=np.float32)
     for i in range(M):
-        for j in range(transformed.r):
-            result[i] += transformed.Xt[i, j] * quasi_dense.Wd[i, j]
+        for j in range(transformed.shape[1]):
+            result[i] += transformed[i, j] * quasi_dense.Wd[i, j]
 
     # Compare with the expected result
     expected = sparse_matrix @ input_vec

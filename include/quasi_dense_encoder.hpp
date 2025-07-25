@@ -43,6 +43,8 @@ QuasiDense convert_to_quasi_dense(const float* W, uint32_t m, uint32_t n);
 void decode_from_quasi_dense(const QuasiDense& Q, float* W_out);
 
 /// Transform input vector x (length n) into XtDense (m×r).
-XtDense transform_input(const QuasiDense& Q, const float* x);
+void transform_input(const QuasiDense& Q, const float* x);
 
-void copy_input_to_Xt(const QuasiDense& Q, const float* x);
+std::vector<float> transform_output(const QuasiDense& Q);
+
+// void copy_input_to_Xt(const QuasiDense& Q, const float* x);

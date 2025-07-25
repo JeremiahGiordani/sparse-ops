@@ -18,13 +18,14 @@ void quasi_dense_matvec_hidden_mt(
     const QuasiDense& Q_next,
     const float*      x,
     const float*      bias,
-    float*            yXt,
     int               threads
 ) {
     const uint32_t m   = Q.m;
     const uint32_t r   = Q.r;
     const int      nth = (threads > 0 ? threads : omp_get_max_threads());
     const bool     use512 = supports_avx512();
+
+    float* yXt = Q_next.Xt.ptr;
 
     // zero next‑layer buffer once
     std::memset(yXt, 0, size_t(Q_next.m) * Q_next.r * sizeof(float));
@@ -88,15 +89,10 @@ void quasi_dense_matvec_hidden_mt(
     }
 }
 
-
-
-
 void quasi_dense_matvec_hidden_mt(
     const QuasiDense& Q,
     const QuasiDense& Q_next,
-    const XtDense&    X,
     const float*      bias,
-    float*            yXt,
     int               threads
 ) {
     const uint32_t m    = Q.m;
@@ -104,14 +100,15 @@ void quasi_dense_matvec_hidden_mt(
     const int      nth  = (threads>0 ? threads : omp_get_max_threads());
     const bool     use512 = supports_avx512();
 
+    float* yXt = Q_next.Xt.ptr;
     // zero next-layer buffer
-    std::memset(yXt, 0, size_t(Q_next.m) * Q_next.r * sizeof(float));
+    // std::memset(yXt, 0, size_t(Q_next.m) * Q_next.r * sizeof(float));
 
     #pragma omp parallel for num_threads(nth) schedule(static)
     for (uint32_t i = 0; i < m; ++i) {
         size_t base     = size_t(i) * r;
         const float* wrow   = Q.Wd.ptr   + base;
-        const float* xrow   = X.Xt.ptr    + base;
+        const float* xrow   = Q.Xt.ptr    + base;
         uint32_t     nnz_i  = Q.nnz[i];
         float        acc    = bias ? bias[i] : 0.0f;
         uint32_t     j      = 0;

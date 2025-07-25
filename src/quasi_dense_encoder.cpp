@@ -74,19 +74,19 @@ void decode_from_quasi_dense(const QuasiDense& Q, float* W_out) {
     }
 }
 
-XtDense transform_input(const QuasiDense& Q, const float* x) {
-    XtDense X(Q.m, Q.r);
-    for (uint32_t i = 0; i < Q.m; ++i) {
-        size_t base = size_t(i)*Q.r;
-        for (uint32_t j = 0; j < Q.r; ++j) {
-            X.Xt.ptr[base+j] = x[ Q.idx[base+j] ];
-        }
-    }
-    return X;
-}
+// XtDense transform_input(const QuasiDense& Q, const float* x) {
+//     XtDense X(Q.m, Q.r);
+//     for (uint32_t i = 0; i < Q.m; ++i) {
+//         size_t base = size_t(i)*Q.r;
+//         for (uint32_t j = 0; j < Q.r; ++j) {
+//             X.Xt.ptr[base+j] = x[ Q.idx[base+j] ];
+//         }
+//     }
+//     return X;
+// }
 
 
-void copy_input_to_Xt(const QuasiDense& Q, const float* x) {
+void transform_input(const QuasiDense& Q, const float* x) {
     // gather only the true non‑zeros per row, leave the rest untouched
     for (uint32_t i = 0; i < Q.m; ++i) {
         size_t      base   = size_t(i) * Q.r;
@@ -98,6 +98,23 @@ void copy_input_to_Xt(const QuasiDense& Q, const float* x) {
             xrow[j] = x[ idxRow[j] ];
         }
         // zero‑pad the remainder so your dot sees 0s:
-        std::fill(xrow + len, xrow + base + Q.r, 0.0f);
+        std::fill(xrow + len, xrow + Q.r,     0.0f);
     }
+}
+
+std::vector<float> transform_output(const QuasiDense& Q) {
+    std::vector<float> out(Q.n, 0.0f);
+    // For each original input index i, look up the first
+    // position in Q.Xt where it was placed.
+    for (uint32_t i = 0; i < Q.n; ++i) {
+        uint32_t start = Q.rev_off[i];
+        uint32_t end   = Q.rev_off[i+1];
+        if (start < end) {
+            // pick the first occurrence
+            uint32_t pos = Q.rev_pos[start];
+            out[i] = Q.Xt.ptr[pos];
+        }
+        // else leave out[i] = 0
+    }
+    return out;
 }

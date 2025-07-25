@@ -238,7 +238,6 @@ void quasi_dense_matvec_gather(
 
 void quasi_dense_matvec_mt(
     const QuasiDense& Q,
-    const XtDense&   X,
     const float*     bias,
     float*           y,
     int              threads
@@ -264,7 +263,7 @@ void quasi_dense_matvec_mt(
         for (uint32_t i = 0; i < m; ++i) {
             // AlignedBuffer provides .ptr
             const float* wrow = Q.Wd.ptr + size_t(i) * r;
-            const float* xrow = X.Xt.ptr + size_t(i) * r;
+            const float* xrow = Q.Xt.ptr + size_t(i) * r;
             // Prefetch next row
             if (i + 1 < m) {
                 _mm_prefetch((const char*)(wrow + r), _MM_HINT_T0);
@@ -320,7 +319,7 @@ void quasi_dense_matvec_mt(
         #pragma omp parallel for num_threads(num_threads)
         for (uint32_t i = 0; i < m; ++i) {
             const float* wrow = Q.Wd.ptr + size_t(i) * r;
-            const float* xrow = X.Xt.ptr + size_t(i) * r;
+            const float* xrow = Q.Xt.ptr + size_t(i) * r;
             if (i + 1 < m) {
                 _mm_prefetch((const char*)(wrow + r), _MM_HINT_T0);
                 _mm_prefetch((const char*)(xrow + r), _MM_HINT_T0);
