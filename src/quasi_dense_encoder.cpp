@@ -38,6 +38,23 @@ QuasiDense convert_to_quasi_dense(const float* W, uint32_t m, uint32_t n) {
         }
         // any positions [pos..r0) remain zero
     }
+
+    std::fill(Q.rev_off.begin(), Q.rev_off.end(), 0);
+    for (uint32_t t = 0; t < m * r0; ++t) {
+        uint32_t col = Q.idx[t];
+        ++Q.rev_off[col+1];
+    }
+    // prefix-sum
+    for (uint32_t i = 1; i <= n; ++i)
+        Q.rev_off[i] += Q.rev_off[i-1];
+    // scatter positions
+    Q.rev_pos.resize(Q.rev_off[n]);
+    std::vector<uint32_t> cursor(Q.rev_off);
+    for (uint32_t t = 0; t < m * r0; ++t) {
+        uint32_t col = Q.idx[t];
+        Q.rev_pos[ cursor[col]++ ] = t;
+    }
+
     return Q;
 }
 

@@ -234,65 +234,147 @@ PYBIND11_MODULE(sparseops_backend, m)
         py::arg("threads") = 0,
         "Multithreaded sparse matvec (AVX-512)");
     m.def("dense_block_kernel",
-      [](py::array_t<float, py::array::c_style|py::array::forcecast> A,
-         py::array_t<float, py::array::c_style|py::array::forcecast> x,
-         py::array_t<float, py::array::c_style|py::array::forcecast> b)
-      {
-          auto bufA = A.request(), bufx = x.request(), bufb = b.request();
-          size_t M = bufA.shape[0], K = bufA.shape[1];
-          py::array_t<float> y(M);
-          auto bufy = y.request();
+        [](py::array_t<float, py::array::c_style|py::array::forcecast> A,
+            py::array_t<float, py::array::c_style|py::array::forcecast> x,
+            py::array_t<float, py::array::c_style|py::array::forcecast> b)
+        {
+            auto bufA = A.request(), bufx = x.request(), bufb = b.request();
+            size_t M = bufA.shape[0], K = bufA.shape[1];
+            py::array_t<float> y(M);
+            auto bufy = y.request();
 
-          dense_block_kernel(static_cast<float*>(bufA.ptr),
-                             static_cast<float*>(bufx.ptr),
-                             static_cast<float*>(bufb.ptr),
-                             static_cast<float*>(bufy.ptr),
-                             M, K);
-          return y;
-      },
-      "Baseline dense y = A·x + b (blocked AVX-512)");
-      m.def("convert_to_quasi_dense", &convert_to_quasi_dense_py,
-            "Convert dense NumPy matrix → QuasiDense handle");
-      m.def("decode_from_quasi_dense", &decode_from_quasi_dense_py,
-            "Convert QuasiDense handle → dense NumPy matrix");
-      m.def("transform_input", &transform_input_py,
-            "Transform input vector x into XtDense format");
-      m.def("bilinear_diagonal_matvec_mt",
-            [](const QuasiDense& Q,
-               py::array_t<float> x,
-               py::array_t<float> bias,
-               int threads) {
-                auto buf_bias = bias.request();
-                auto buf_x = x.request();
-                py::array_t<float> y(Q.m);
-                auto buf_y = y.request();
+            dense_block_kernel(static_cast<float*>(bufA.ptr),
+                                static_cast<float*>(bufx.ptr),
+                                static_cast<float*>(bufb.ptr),
+                                static_cast<float*>(bufy.ptr),
+                                M, K);
+            return y;
+        },
+        "Baseline dense y = A·x + b (blocked AVX-512)");
+    m.def("convert_to_quasi_dense", &convert_to_quasi_dense_py,
+        "Convert dense NumPy matrix → QuasiDense handle");
+    m.def("decode_from_quasi_dense", &decode_from_quasi_dense_py,
+        "Convert QuasiDense handle → dense NumPy matrix");
+    m.def("transform_input", &transform_input_py,
+        "Transform input vector x into XtDense format");
 
-                quasi_dense_matvec_mt(
-                    Q,
-                    static_cast<float*>(buf_x.ptr),
-                    static_cast<float*>(buf_bias.ptr),
-                    static_cast<float*>(buf_y.ptr),
-                    threads);
-                return y;
-            },
-            "Multithreaded bilinear diagonal matvec (quasi-dense)");
-        m.def("quasi_dense_matvec_gather",
-            [](const QuasiDense& Q,
-               py::array_t<float> x,
-               py::array_t<float> bias,
-               int threads) {
-                auto buf_x = x.request();
-                auto buf_bias = bias.request();
-                py::array_t<float> y(Q.m);
-                auto buf_y = y.request();
 
-                quasi_dense_matvec_gather(
-                    Q,
-                    static_cast<float*>(buf_x.ptr),
-                    static_cast<float*>(buf_bias.ptr),
-                    static_cast<float*>(buf_y.ptr),
-                    threads);
-                return y;
-            },
-            "Multithreaded bilinear diagonal matvec (quasi-dense)");
+    // 1) Standard matvec from raw x
+    m.def("bilinear_diagonal_matvec_mt",
+        [](const QuasiDense &Q,
+        py::array_t<float> x_arr,
+        py::array_t<float> bias_arr,
+        int threads) {
+            auto buf_x     = x_arr.request();
+            auto buf_bias  = bias_arr.request();
+            py::array_t<float> y_arr({(ssize_t)Q.m});
+            auto buf_y     = y_arr.request();
+
+            quasi_dense_matvec_mt(
+                Q,
+                static_cast<float*>(buf_x.ptr),
+                static_cast<float*>(buf_bias.ptr),
+                static_cast<float*>(buf_y.ptr),
+                threads
+            );
+            return y_arr;
+        },
+        "Multithreaded bilinear diagonal matvec (quasi‑dense)");
+
+    // 2) Standard matvec from pre‑transformed Xt
+    m.def("bilinear_diagonal_matvec_mt",
+        [](const QuasiDense &Q,
+        const XtDense   &X,
+        py::array_t<float> bias_arr,
+        int threads) {
+            auto buf_bias = bias_arr.request();
+            py::array_t<float> y_arr({(ssize_t)Q.m});
+            auto buf_y    = y_arr.request();
+
+            quasi_dense_matvec_mt(
+                Q,
+                X,
+                static_cast<float*>(buf_bias.ptr),
+                static_cast<float*>(buf_y.ptr),
+                threads
+            );
+            return y_arr;
+        },
+        "Multithreaded bilinear diagonal matvec (pre‑transformed input)");
+
+    // 3) Hidden‑layer fused matvec from raw x → yXt
+    m.def("bilinear_diagonal_matvec_hidden_mt",
+        [](const QuasiDense &Q,
+        const QuasiDense &Q_next,
+        py::array_t<float> x_arr,
+        py::array_t<float> bias_arr,
+        int threads) {
+            auto buf_x    = x_arr.request();
+            auto buf_bias = bias_arr.request();
+            // allocate yXt = next.m × next.r
+            std::array<ssize_t,2> shape = {
+                (ssize_t)Q_next.m,
+                (ssize_t)Q_next.r
+            };
+            py::array_t<float> yXt_arr(shape);
+            auto buf_yXt = yXt_arr.request();
+
+            quasi_dense_matvec_hidden_mt(
+                Q,
+                Q_next,
+                static_cast<float*>(buf_x.ptr),
+                static_cast<float*>(buf_bias.ptr),
+                static_cast<float*>(buf_yXt.ptr),
+                threads
+            );
+            return yXt_arr;
+        },
+        "Fused hidden‑layer matvec (raw input)");
+
+    // 4) Hidden‑layer fused matvec from pre‑transformed Xt → yXt
+    m.def("bilinear_diagonal_matvec_hidden_mt",
+        [](const QuasiDense &Q,
+        const QuasiDense &Q_next,
+        const XtDense    &X,
+        py::array_t<float> bias_arr,
+        int threads) {
+            auto buf_bias = bias_arr.request();
+            std::array<ssize_t,2> shape = {
+                (ssize_t)Q_next.m,
+                (ssize_t)Q_next.r
+            };
+            py::array_t<float> yXt_arr(shape);
+            auto buf_yXt = yXt_arr.request();
+
+            quasi_dense_matvec_hidden_mt(
+                Q,
+                Q_next,
+                X,
+                static_cast<float*>(buf_bias.ptr),
+                static_cast<float*>(buf_yXt.ptr),
+                threads
+            );
+            return yXt_arr;
+        },
+        "Fused hidden‑layer matvec (pre‑transformed input)");
+
+    m.def("quasi_dense_matvec_gather",
+        [](const QuasiDense& Q,
+            py::array_t<float> x,
+            py::array_t<float> bias,
+            int threads) {
+            auto buf_x = x.request();
+            auto buf_bias = bias.request();
+            py::array_t<float> y(Q.m);
+            auto buf_y = y.request();
+
+            quasi_dense_matvec_gather(
+                Q,
+                static_cast<float*>(buf_x.ptr),
+                static_cast<float*>(buf_bias.ptr),
+                static_cast<float*>(buf_y.ptr),
+                threads);
+            return y;
+        },
+        "Multithreaded bilinear diagonal matvec (quasi-dense)");
 }
