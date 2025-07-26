@@ -42,37 +42,14 @@ include_directories(
 # Also grab Python include / link flags
 find_package(Python3 COMPONENTS Development REQUIRED)
 
-# ──────────────────────────────────────────────────────────────
-#  Static library: code generator + JIT cache
-# ──────────────────────────────────────────────────────────────
-add_library(sparse_codegen STATIC
-    src/codegen/jit_cache.cpp
-    src/codegen/spmv_template.cpp
-    src/codegen/spmv_dense_template.cpp)
-
-set_target_properties(sparse_codegen PROPERTIES POSITION_INDEPENDENT_CODE ON)
-
-
-target_include_directories(sparse_codegen
-    PUBLIC ${CMAKE_SOURCE_DIR}/include)
-
-target_link_libraries(sparse_codegen
-    PRIVATE pthread dl)
 
 # ──────────────────────────────────────────────────────────────
 #  Python extension module
 # ──────────────────────────────────────────────────────────────
 add_library(sparseops_backend MODULE
     src/bindings.cpp
-    src/dense_matvec.cpp
-    src/bcoo16_encoder.cpp
-    src/sparse_matvec_mt.cpp
-    src/sparse_dispatch.cpp
-    src/sparse_preproc.cpp
-    src/dense_block_kernel.cpp
     src/quasi_dense_encoder.cpp
     src/bilinear_diagonal_matvec.cpp
-    src/bilinear_diagonal_matvec_hidden.cpp
     src/bilinear_diagonal_matmul.cpp)
 target_include_directories(sparseops_backend PRIVATE ${PYBIND11_INCLUDES})
 # Naming: produce "sparseops_backend.so" directly
@@ -88,7 +65,6 @@ target_include_directories(sparseops_backend
 
 target_link_libraries(sparseops_backend
     PRIVATE
-        sparse_codegen
         Python3::Python
         $<$<BOOL:${OpenMP_CXX_FOUND}>:OpenMP::OpenMP_CXX>)
 

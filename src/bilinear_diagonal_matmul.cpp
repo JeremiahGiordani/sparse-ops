@@ -2,6 +2,7 @@
 #include <cstring>  // memcpy, memset
 #include <immintrin.h>
 #include <omp.h>
+#include <cstdlib>
 
 static inline bool supports_avx512() {
 #if defined(__GNUC__)
@@ -11,17 +12,17 @@ static inline bool supports_avx512() {
 #endif
 }
 
-void quasi_dense_matmul_mt(
+void quasi_dense_matmul(
     const QuasiDense& Q,
     const float*      X,      // [K × C], row-major
     uint32_t          C,
     const float*      bias,   // [M]
-    float*            Y,      // [M × C], row-major
-    int               threads
+    float*            Y      // [M × C], row-major
 ) {
     const uint32_t m   = Q.m;
     const uint32_t r   = Q.r;
-    const int      nth = (threads > 0 ? threads : omp_get_max_threads());
+    const char* env = std::getenv("OMP_NUM_THREADS");
+    int nth = env ? std::atoi(env) : omp_get_max_threads();
     const bool     use_avx512 = supports_avx512();
 
     #pragma omp parallel for num_threads(nth) schedule(static)

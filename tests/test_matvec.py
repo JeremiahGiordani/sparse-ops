@@ -11,7 +11,7 @@ import torch
 
 from python.cpp_backend import (
     encode,
-    matmul,
+    matvec,
 )
 from python.utils import to_csr
 
@@ -20,8 +20,7 @@ from python.utils import to_csr
 # ----------------------------------------------------------------------
 INPUT_DIM  = 2000
 OUTPUT_DIM = 2000
-C = 40
-SPARSITY   = 0.95
+SPARSITY   = 0.9
 N_RUNS     = 100     # <-- number of repetitions
 SEED       = 42
 # ----------------------------------------------------------------------
@@ -33,15 +32,19 @@ np.random.seed(SEED)
 torch.manual_seed(SEED)
 
 weight = np.random.randn(OUTPUT_DIM, INPUT_DIM).astype(np.float32)
+# print(f"Minimum weight value: {np.min(weight)}, maximum weight value: {np.max(weight)}")
 mask   = np.random.rand(*weight.shape) > SPARSITY
 weight *= mask
+# weight[weight < SPARSITY] = 0.0
+# Ensure all values are non-negative
+# weight[weight < 0] *= -1.0
 
 bias       = np.random.randn(OUTPUT_DIM).astype(np.float32)
-input_mat  = np.random.randn(INPUT_DIM, C).astype(np.float32)
+input_vec  = np.random.randn(INPUT_DIM).astype(np.float32)
 
 weight_t   = torch.tensor(weight)
-bias_t     = torch.tensor(np.expand_dims(bias, axis=1))
-input_t    = torch.tensor(input_mat)
+bias_t     = torch.tensor(bias)
+input_t    = torch.tensor(input_vec)
 
 weight_np = weight_t.detach().cpu().numpy().astype(np.float32)
 bias_np   = bias_t.detach().cpu().numpy().astype(np.float32)
@@ -53,9 +56,13 @@ _, _, _    = to_csr(torch.tensor(weight))     # pre-compute CSR pieces if needed
 quasi_dense = encode(weight_np)
 
 
-# num_threads = int(os.environ.get("OMP_NUM_THREADS", "1"))
-# torch.set_num_threads(num_threads)
-num_threads = None
+num_threads = int(os.environ.get("OMP_NUM_THREADS", "1"))
+torch.set_num_threads(num_threads)
+# num_threads = None  # Disable threading for this test
+
+print(f"MAX NNZ in row: {quasi_dense.r}")
+# Compute the minimum number of non-zero entries (NNZ) in any row, using weight_np
+print(f"MIN NNZ in row: {np.min(np.sum(weight_np != 0, axis=1))}")
 
 
 # ----------------------------------------------------------------------
@@ -77,13 +84,15 @@ def torch_run():
     return torch.matmul(weight_t, input_t) + bias_t
 
 def numpy_run():
-    return weight @ input_mat + bias_np
+    return weight @ input_vec + bias
 
 def scipy_run():
-    return csr_mat.dot(input_mat) + bias_np
+    return csr_mat.dot(input_vec) + bias
 
 def bilinear_diagonal_run():
-    return matmul(quasi_dense, input_mat, bias_np)
+    return matvec(quasi_dense, input_np, bias_np)
+    
+    # return run_quasi_dense_matvec_hidden(quasi_dense, quasi_dense_next, bias_np, threads=num_threads)
 
 # ----------------------------------------------------------------------
 # Correctness check (one-shot)
@@ -99,8 +108,9 @@ print()
 # Benchmark
 # ----------------------------------------------------------------------
 print(f"=== Average runtime over {N_RUNS:,} runs ===")
-print(f"=== Sparsity: {SPARSITY:.2f}, Input dim: {INPUT_DIM:,}, Output dim: {OUTPUT_DIM:,}, Columns: {C} ===")
+print(f"=== Sparsity: {SPARSITY:.2f}, Input dim: {INPUT_DIM:,}, Output dim: {OUTPUT_DIM:,} ===")
 print(f"=== Threads: {num_threads} ===")
 print(f"[PyTorch]      {timed_avg(torch_run)*1000:.3f} ms")
 print(f"[NumPy]        {timed_avg(numpy_run)*1000:.3f} ms")
+print(f"[SciPy Sparse] {timed_avg(scipy_run)*1000:.3f} ms")
 print(f"[Bilinear Diagonal] {timed_avg(bilinear_diagonal_run)*1000:.3f} ms")

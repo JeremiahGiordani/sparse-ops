@@ -25,15 +25,6 @@ struct QuasiDense {
     {}
 };
 
-struct XtDense {
-    uint32_t m, r;
-    AlignedBuffer Xt;               // aligned m*r floats
-
-    XtDense(uint32_t _m, uint32_t _r)
-      : m(_m), r(_r),
-        Xt(size_t(_m) * _r)
-    {}
-};
 
 /// Encode a dense m×n matrix into quasi‑dense form.
 QuasiDense convert_to_quasi_dense(const float* W, uint32_t m, uint32_t n);
@@ -41,10 +32,3 @@ QuasiDense convert_to_quasi_dense(const float* W, uint32_t m, uint32_t n);
 /// Decode quasi‑dense back into a full dense m×n matrix.
 /// W_out must point to an array of size m*n.
 void decode_from_quasi_dense(const QuasiDense& Q, float* W_out);
-
-/// Transform input vector x (length n) into XtDense (m×r).
-void transform_input(const QuasiDense& Q, const float* x);
-
-std::vector<float> transform_output(const QuasiDense& Q);
-
-// void copy_input_to_Xt(const QuasiDense& Q, const float* x);
