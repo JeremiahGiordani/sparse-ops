@@ -140,3 +140,16 @@ def run_quasi_dense_matvec_hidden(Q: sparseops_backend.QuasiDense, Q_next: spars
         None - the result is stored in Q_next.Xt
     """
     sparseops_backend.bilinear_diagonal_matvec_hidden_mt(Q, Q_next, bias, threads)
+
+def run_bilinear_diagonal_matmul(Q: sparseops_backend.QuasiDense, X: np.ndarray, bias: np.ndarray, threads: int) -> np.ndarray:
+    """
+    Bilinear diagonal matrix multiplication using the C++ backend.
+    Args:
+        Q: QuasiDense object (m, n)
+        X: XtDense object OR (n,) np.ndarray
+        bias: (m,) torch.Tensor
+        threads: int, number of threads to use
+    Returns:
+        (m,) torch.Tensor
+    """
+    return sparseops_backend.bilinear_diagonal_matmul_mt(Q, X, bias, threads)

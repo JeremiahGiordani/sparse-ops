@@ -1,6 +1,7 @@
 // src/quasi_dense_encoder.cpp
 #include "quasi_dense_encoder.hpp"
 #include <algorithm>
+#include <immintrin.h>
 
 QuasiDense convert_to_quasi_dense(const float* W, uint32_t m, uint32_t n) {
     // 1) Count non-zeros per row and track the maximum
@@ -87,20 +88,22 @@ void decode_from_quasi_dense(const QuasiDense& Q, float* W_out) {
 
 
 void transform_input(const QuasiDense& Q, const float* x) {
-    // gather only the true non‑zeros per row, leave the rest untouched
+    #pragma omp parallel for schedule(static)
     for (uint32_t i = 0; i < Q.m; ++i) {
         size_t      base   = size_t(i) * Q.r;
         uint32_t    len    = Q.nnz[i];
         const auto* idxRow = Q.idx.data() + base;
         float*      xrow   = Q.Xt.ptr     + base;
 
+        // gather the real entries
         for (uint32_t j = 0; j < len; ++j) {
-            xrow[j] = x[ idxRow[j] ];
+            xrow[j] = x[idxRow[j]];
         }
-        // zero‑pad the remainder so your dot sees 0s:
-        std::fill(xrow + len, xrow + Q.r,     0.0f);
+        // safe tail‑zero
+        std::fill(xrow + len, xrow + Q.r, 0.0f);
     }
 }
+
 
 std::vector<float> transform_output(const QuasiDense& Q) {
     std::vector<float> out(Q.n, 0.0f);

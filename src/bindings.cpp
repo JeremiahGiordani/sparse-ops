@@ -12,6 +12,7 @@
 #include "dense_block_kernel.hpp"  // for dense_block_kernel
 #include "quasi_dense_encoder.hpp"  // for quasi-dense encoding
 #include "bilinear_diagonal_matvec.hpp"  // for quasi_dense_matvec_mt
+#include "bilinear_diagonal_matmul.hpp"  // for quasi_dense_matmul_mt
 
 
 namespace py = pybind11;
@@ -369,4 +370,52 @@ PYBIND11_MODULE(sparseops_backend, m)
             return y;
         },
         "Multithreaded bilinear diagonal matvec (quasi-dense)");
+    m.def("bilinear_diagonal_matmul_mt",
+    [](const QuasiDense &Q,
+       py::array_t<float, py::array::c_style | py::array::forcecast> X_arr,
+       py::array_t<float, py::array::c_style | py::array::forcecast> bias_arr,
+       int threads) {
+        // Request array info
+        auto buf_X    = X_arr.request();
+        auto buf_bias = bias_arr.request();
+        if (buf_X.ndim != 2) {
+            throw std::runtime_error("X must be 2D (n × C)");
+        }
+        if ((uint32_t)buf_X.shape[0] != Q.n) {
+            throw std::runtime_error("Input matrix row count must equal Q.n");
+        }
+        if ((uint32_t)buf_bias.size != Q.m) {
+            throw std::runtime_error("Bias length must equal Q.m");
+        }
+
+        // Number of columns C
+        uint32_t C = (uint32_t)buf_X.shape[1];
+
+        // Allocate output Y (shape m × C)
+        std::array<ssize_t,2> shape = { (ssize_t)Q.m, (ssize_t)C };
+        py::array_t<float> Y_arr(shape);
+        auto buf_Y = Y_arr.request();
+
+        // Call the C++ kernel
+        quasi_dense_matmul_mt(
+            Q,
+            static_cast<const float*>(buf_X.ptr),
+            C,
+            static_cast<const float*>(buf_bias.ptr),
+            static_cast<float*>(buf_Y.ptr),
+            threads
+        );
+
+        return Y_arr;
+    },
+    R"pbdoc(
+        Multithreaded bilinear-diagonal mat-mul (quasi-dense)
+
+        Computes Y = Q × X + bias, where:
+          • Q is a QuasiDense (m×n) matrix
+          • X is an n×C float32 array
+          • bias is length-m float32 vector (added to each column)
+          • Returns Y as an m×C float32 NumPy array
+          • threads = number of OpenMP threads (0 = auto)
+    )pbdoc");
 }
