@@ -9,9 +9,7 @@
 #include "bilinear_diagonal_matvec.hpp"  // for quasi_dense_matvec_mt
 #include "bilinear_diagonal_matmul.hpp"  // for quasi_dense_matmul_mt
 
-
 namespace py = pybind11;
-
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Encode to quasi-dense format
@@ -43,8 +41,6 @@ static py::array_t<float> decode_from_quasi_dense_py(
     decode_from_quasi_dense(Q, static_cast<float*>(buf.ptr));
     return W_out;
 }
-
-
 
 // ─────────────────────────────────────────────────────────────────────────────
 PYBIND11_MODULE(sparseops_backend, m)
