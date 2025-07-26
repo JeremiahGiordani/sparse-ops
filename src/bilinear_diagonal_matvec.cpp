@@ -64,7 +64,7 @@ void quasi_dense_matvec_mt(
             
             for (; j + 16 <= r; j += 16) {
                 __m512 wv = _mm512_loadu_ps(wrow + j);
-                __m512 xv = _mm512_loadu_ps(xrow + j);
+                __m512 xv = _mm512_load_ps(xrow + j);
                 accv = _mm512_fmadd_ps(wv, xv, accv);
             }
 
