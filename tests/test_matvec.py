@@ -13,7 +13,6 @@ from python.cpp_backend import (
     encode,
     matvec,
 )
-from python.utils import to_csr
 
 # ----------------------------------------------------------------------
 # Experiment parameters
@@ -51,7 +50,6 @@ bias_np   = bias_t.detach().cpu().numpy().astype(np.float32)
 input_np  = input_t.detach().cpu().numpy().astype(np.float32)
 
 csr_mat    = sp.csr_matrix(weight)            # build once
-_, _, _    = to_csr(torch.tensor(weight))     # pre-compute CSR pieces if needed
 
 quasi_dense = encode(weight_np)
 

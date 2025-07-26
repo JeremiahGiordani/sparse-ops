@@ -13,14 +13,13 @@ from python.cpp_backend import (
     encode,
     matmul,
 )
-from python.utils import to_csr
 
 # ----------------------------------------------------------------------
 # Experiment parameters
 # ----------------------------------------------------------------------
-INPUT_DIM  = 2000
-OUTPUT_DIM = 2000
-C = 40
+INPUT_DIM  = 147
+OUTPUT_DIM = 64
+C = 12544
 SPARSITY   = 0.95
 N_RUNS     = 100     # <-- number of repetitions
 SEED       = 42
@@ -48,7 +47,6 @@ bias_np   = bias_t.detach().cpu().numpy().astype(np.float32)
 input_np  = input_t.detach().cpu().numpy().astype(np.float32)
 
 csr_mat    = sp.csr_matrix(weight)            # build once
-_, _, _    = to_csr(torch.tensor(weight))     # pre-compute CSR pieces if needed
 
 quasi_dense = encode(weight_np)
 
