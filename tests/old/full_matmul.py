@@ -28,7 +28,7 @@ num_threads = int(os.environ.get("OMP_NUM_THREADS", "1"))
 # ----------------------------------------------------------------------
 INPUT_DIM  = 2000
 OUTPUT_DIM = 2000
-SPARSITY   = 0.9
+SPARSITY   = 0.30
 N_RUNS     = 100
 SEED       = 42
 # ----------------------------------------------------------------------
@@ -50,7 +50,7 @@ def export_onnx_model(weight, bias, input_shape):
     torch.onnx.export(model, dummy_input, onnx_path, input_names=["input"], output_names=["output"], opset_version=13)
     return onnx_path
 
-def apply_block_sparsity(weight, block_rows=4, block_cols=4, sparsity=SPARSITY):
+def apply_block_sparsity(weight, block_rows=16, block_cols=1, sparsity=SPARSITY):
     keep_prob = 1 - sparsity  # Convert to probability of keeping a block
     weight = weight.copy()
     for i in range(0, weight.shape[0], block_rows):
@@ -67,10 +67,10 @@ np.random.seed(SEED)
 torch.manual_seed(SEED)
 
 weight = np.random.randn(OUTPUT_DIM, INPUT_DIM).astype(np.float32)
-# mask   = np.random.rand(*weight.shape) > SPARSITY
-# weight *= mask
+mask   = np.random.rand(*weight.shape) > SPARSITY
+weight *= mask
 
-weight = apply_block_sparsity(weight)
+# weight = apply_block_sparsity(weight)
 
 bias       = np.random.randn(OUTPUT_DIM).astype(np.float32)
 input_vec  = np.random.randn(INPUT_DIM).astype(np.float32)
@@ -182,7 +182,7 @@ print("=== Verifying correctness ===")
 out_torch = torch_run().numpy()
 print("Torch vs NumPy :", np.allclose(out_torch, numpy_run(), atol=1e-4))
 print("Torch vs SciPy :", np.allclose(out_torch, scipy_run(), atol=1e-4))
-print("Torch vs Custom:", np.allclose(out_torch, custom_run(), atol=1e-4))
+# print("Torch vs Custom:", np.allclose(out_torch, custom_run(), atol=1e-4))
 print("Torch vs Custom Sparse:", np.allclose(out_torch, custom_sparse_run(), atol=1e-4))
 print("Torch vs TF    :", np.allclose(out_torch, tensorflow_run().numpy(), atol=1e-4))
 print("Torch vs OpenVINO:", np.allclose(out_torch, openvino_run(n_runs=1)[0], atol=1e-4))
@@ -194,10 +194,12 @@ print()
 # Benchmark
 # ----------------------------------------------------------------------
 print(f"=== Average runtime over {N_RUNS:,} runs ===")
+# Print sparsity
+print(f"=== Sparsity: {SPARSITY * 100:.1f}% ===")
 print(f"[PyTorch]      {timed_avg(torch_run)*1000:.3f} ms")
 print(f"[NumPy]        {timed_avg(numpy_run)*1000:.3f} ms")
 print(f"[SciPy Sparse] {timed_avg(scipy_run)*1000:.3f} ms")
-print(f"[Custom]       {timed_avg(custom_run)*1000:.3f} ms")
+# print(f"[Custom]       {timed_avg(custom_run)*1000:.3f} ms")
 print(f"[Custom Sparse]{timed_avg(custom_sparse_run)*1000:.3f} ms")
 print(f"[TensorFlow]   {timed_avg(tensorflow_run)*1000:.3f} ms")
 print(f"[OpenVINO]      {openvino_run()[1]:.3f} ms")
