@@ -8,3 +8,4 @@ data/
 core.*
 *.onnx
 onnx/
+tests/old/
