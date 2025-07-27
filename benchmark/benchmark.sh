@@ -10,7 +10,7 @@ SPARSITY=0.7
 WARMUPS=20       # # of dummy runs to warm pages, threads, freq
 RUNS=50
 OMP_THREADS=8
-THREADS=1
+THREADS=8
 # ------------------------------
 
 # 1) Pin to cores 0–7 (so threads never hop across sockets / NUMA)
