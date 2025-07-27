@@ -53,6 +53,7 @@ void quasi_dense_matvec(
 
             const float* wrow = Q.Wd.ptr + base;
             uint32_t      r    = Q.r;
+            uint32_t count     = Q.nnz[i];   
             uint32_t      j    = 0;
             __m512        accv = _mm512_setzero_ps();
 
@@ -61,16 +62,21 @@ void quasi_dense_matvec(
                 const float* next_wrow = wrow + r;
                 _mm_prefetch((const char*)(next_wrow),      _MM_HINT_T0);
                 _mm_prefetch((const char*)(next_wrow + r),  _MM_HINT_T0);  // also prefetch next xrow if desired
+
+                const float* next_xrow = Q.Xt.ptr + (base + r);
+                _mm_prefetch((const char*)(next_xrow),     _MM_HINT_T0);
+                _mm_prefetch((const char*)(next_xrow + r), _MM_HINT_T0);
+                
             }
             
-            for (; j + 16 <= r; j += 16) {
+            for (; j + 16 <= count; j += 16) {
                 __m512 wv = _mm512_loadu_ps(wrow + j);
                 __m512 xv = _mm512_loadu_ps(xrow + j);
                 accv = _mm512_fmadd_ps(wv, xv, accv);
             }
 
             // 4) masked tail (unaligned) for the final rem = r−j elements
-            uint32_t rem = r - j;
+            uint32_t rem = count - j;
             if (rem) {
                 __mmask16 m = (__mmask16(1) << rem) - 1;
                 __m512 wv = _mm512_maskz_loadu_ps(m, wrow + j);

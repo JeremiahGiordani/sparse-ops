@@ -6,11 +6,12 @@
 # ---- Configurable params ----
 M=2000
 N=2000
-SPARSITY=0.7
-WARMUPS=20       # # of dummy runs to warm pages, threads, freq
-RUNS=50
+SPARSITY=0.80
+WARMUPS=5       # # of dummy runs to warm pages, threads, freq
+RUNS=10
 OMP_THREADS=8
-THREADS=8
+THREADS=1
+SEED=44
 # ------------------------------
 
 # 1) Pin to cores 0–7 (so threads never hop across sockets / NUMA)
@@ -31,11 +32,11 @@ export OMP_PROC_BIND=spread
 echo "Warming up (${WARMUPS} runs)…"
 for i in $(seq 1 $WARMUPS); do
   $CMD_PREFIX ./build/sparse_matvec_bench \
-    --M ${M} --N ${N} --sparsity ${SPARSITY} --runs 1 --threads ${THREADS} --omp-threads ${OMP_THREADS} \
+    --M ${M} --N ${N} --sparsity ${SPARSITY} --runs 1 --threads ${THREADS} --omp-threads ${OMP_THREADS} --seed ${SEED} \
     > /dev/null
 done
 
 # 4) The real benchmark
 echo "Running real benchmark (${RUNS} runs)…"
 $CMD_PREFIX ./build/sparse_matvec_bench \
-  --M ${M} --N ${N} --sparsity ${SPARSITY} --runs ${RUNS} --threads ${THREADS} --omp-threads ${OMP_THREADS} \
+  --M ${M} --N ${N} --sparsity ${SPARSITY} --runs ${RUNS} --threads ${THREADS} --omp-threads ${OMP_THREADS} --seed ${SEED} \

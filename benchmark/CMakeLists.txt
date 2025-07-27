@@ -20,6 +20,8 @@ find_package(OpenMP REQUIRED)
 # Find Intel MKL for sparse BLAS
 find_package(MKL REQUIRED)
 
+find_package(BLAS REQUIRED)
+
 # Sources for the benchmark executable
 set(BENCH_SOURCES
     main.cpp
