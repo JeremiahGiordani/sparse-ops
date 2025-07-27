@@ -12,16 +12,13 @@ struct QuasiDense {
     std::vector<uint32_t>   idx;     ///< m*r indices
     AlignedBuffer           Xt;      ///< m*r floats (gather buffer)
     std::vector<uint32_t>   nnz;     ///< m counts
-    std::vector<uint32_t>   rev_off; ///< n+1 offsets
-    std::vector<uint32_t>   rev_pos; ///< flattened positions
 
     QuasiDense(uint32_t _m, uint32_t _n, uint32_t _r)
       : m(_m), n(_n), r(_r),
         Wd(size_t(_m)*_r),
         idx(size_t(_m)*_r),
         Xt(size_t(_m)*_r),
-        nnz(_m),
-        rev_off(_n+1)
+        nnz(_m)
     {}
 };
 

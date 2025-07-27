@@ -241,9 +241,8 @@ The scripts under `tests/` (e.g. `test_matvec.py`, `test_matmul.py`) show how to
 2. From the repo root:
 
    ```bash
-   mkdir build && cd build
-   cmake ..
-   make -j
+   mkdir build
+   cmake --build build -j
    # this produces `lib(sparseops_backend).so` that Python can import
    ```
 
