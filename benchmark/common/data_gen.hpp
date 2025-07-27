@@ -5,7 +5,7 @@
 #include <vector>
 #include <random>
 #include <mkl.h>                 // for MKL_INT
-#include "../include/quasi_dense_encoder.hpp"  // for QuasiDense
+#include "quasi_dense_encoder.hpp"  // for QuasiDense
 
 /// Holds both the CSR data for MKL and the QuasiDense object
 struct BenchmarkData {

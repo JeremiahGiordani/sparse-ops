@@ -42,10 +42,8 @@ double benchmark_mkl_dense_matvec(const BenchmarkData &data,
                                    std::vector<float> &y,
                                    int runs);
 
-double benchmark_openmp_csr_matvec(const BenchmarkData &data,
-                                   const std::vector<float> &x,
-                                   std::vector<float> &y,
-                                   int runs);
+
+
 
 int main(int argc, char** argv) {
     // Default parameters
