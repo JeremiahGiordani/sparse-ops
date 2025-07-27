@@ -18,11 +18,13 @@
  * @param N            Number of cols
  * @param sparsity     Fraction of entries to set to zero (0.0→dense, 1.0→all zero)
  * @param seed         RNG seed (default = random_device())
+ * @param irregular    If true, the last row is always dense
  */
 BenchmarkData generate_data(int64_t M,
                             int64_t N,
                             double  sparsity,
-                            uint64_t seed)
+                            uint64_t seed,
+                            bool     irregular)
 {
     // 1) Build a flat dense matrix W (row-major)
     std::vector<float> W;
@@ -33,13 +35,34 @@ BenchmarkData generate_data(int64_t M,
     std::uniform_real_distribution<>    zero_coin(0.0, 1.0);
 
     double keep_prob = 1.0 - sparsity;
-    for (int64_t i = 0; i < M * N; ++i) {
-        if (zero_coin(rng) < keep_prob) {
-            W.push_back(val_dist(rng));
-        } else {
-            W.push_back(0.0f);
+    // If irregular, ensure the last row is always dense
+    if (irregular) {
+        for (int64_t i = 0; i < M; ++i) {
+            for (int64_t j = 0; j < N; ++j) {
+                if (i == M - 1) {
+                    // last row: always keep a random value
+                    W.push_back(val_dist(rng));
+                } else {
+                    if (zero_coin(rng) < keep_prob) {
+                        W.push_back(val_dist(rng));
+                    } else {
+                        W.push_back(0.0f);
+                    }
+                }
+            }
+        }
+    } else {
+        for (int64_t i = 0; i < M * N; ++i) {
+            if (zero_coin(rng) < keep_prob) {
+                W.push_back(val_dist(rng));
+            } else {
+                W.push_back(0.0f);
+            }
         }
     }
+
+    
+    
 
     // 2) Build CSR from W
     std::vector<MKL_INT>   row_ptr(M + 1, 0);

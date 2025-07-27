@@ -27,8 +27,10 @@ struct BenchmarkData {
  * @param N            Number of cols
  * @param sparsity     Fraction of entries to zero out (0.0→dense, 1.0→all zero)
  * @param seed         RNG seed (default = random_device())
+ * @param irregular    If true, the last row is always dense
  */
 BenchmarkData generate_data(int64_t M,
                             int64_t N,
                             double  sparsity,
-                            uint64_t seed = std::random_device{}());
+                            uint64_t seed = std::random_device{}(),
+                            bool    irregular = false);

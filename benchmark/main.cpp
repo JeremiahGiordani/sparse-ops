@@ -56,6 +56,7 @@ int main(int argc, char** argv) {
     int     threads   = 1;
     int   omp_threads = 1;
     uint64_t seed     = 42;
+    bool irregular = false;
 
     // Simple CLI parsing
     for (int i = 1; i < argc; ++i) {
@@ -74,11 +75,13 @@ int main(int argc, char** argv) {
             omp_threads = std::stoi(argv[++i]);
         } else if (arg == "--seed" && i+1 < argc) {
             seed = std::stoull(argv[++i]);
+        } else if (arg == "--irregular" && i+1 < argc) {
+            irregular = std::stoi(argv[++i]);
         } else {
             std::cerr << "Unknown or incomplete arg: " << arg << "\n"
                       << "Usage: " << argv[0]
                       << " [--M rows] [--N cols] [--sparsity p]"
-                         " [--runs r] [--threads t] [--seed s]\n";
+                         " [--runs r] [--threads t] [--seed s] [--irregular 0|1]\n";
             return 1;
         }
     }
@@ -99,7 +102,7 @@ int main(int argc, char** argv) {
         << "RNG seed:        " << seed << "\n\n";
 
     // 1) Generate the data (CSR + QuasiDense)
-    auto data = generate_data(M, N, sparsity, seed);
+    auto data = generate_data(M, N, sparsity, seed, irregular);
 
     // 2) Create a random input vector x
     std::vector<float> x(N);
