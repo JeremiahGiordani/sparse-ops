@@ -134,23 +134,37 @@ void ellpack_matmul(
 
 ### High‑Level Algorithm (in `src/ellpack_matmul.cpp`)
 
-```text
-for each row i in 0..m-1:
-    yrow = Y + i        // pointer to row i storage
-    yrow[*] ← bias[i]   // broadcast bias to all C columns
+1. **For each row** `i = 0…m-1`
 
-    // For each packed non‑zero in row i:
-    for t in 0..r-1:  
-        w = E.Wd.ptr[i*r + t]       // value
-        col = E.idx[i*r + t]        // original column
-        xrow = X + col*C            // pointer to that column in X
+   * Point to the output slice `yrow = Y[i,*]`
+   * **Initialize** `yrow[c] = bias[i]` (or zero)
 
-        // vectorized:  Y_row[0..C) += w * X[col,0..C)
-        // tail‑handle for C % VLEN
-```
+2. **Tile the columns** into chunks of `simd_width` (e.g. 16 for AVX‑512):
 
-* Parallelized over `i` with OpenMP.
-* Uses AVX2 intrinsics (`_mm256_fmadd_ps`) for the inner loop.
+   ```text
+   for cb in 0, simd_width, 2·simd_width, … < C:
+       // handle columns [cb … cb+simd_width)
+   ```
+
+3. **Within each block**
+   a. **Load** the current `yrow[cb…]` into a vector register
+   b. **Accumulate** every non‑zero `(wj, colj)` in that row:
+
+   ```
+   for each packed non‑zero in row i:
+       yv += wj * X[colj, cb…]
+   ```
+
+   i.e. broadcast the weight, gather that slice of `X[colj,*]`, and do a fused‑multiply‑add
+   c. **Store** the updated block back to `yrow[cb…]`
+
+4. **Repeat** until all columns are covered.
+
+> When `C == 1`, this collapses to the same gather‑then‑dot approach used in **mat‑vec**, giving you a single‑pass, ultra‑tight SIMD loop.
+
+---
+
+**Why this makes sense on CPUs:** by blocking the output, we load and store each chunk of `yrow` exactly once and keep it in registers across all non‑zero updates, vastly reducing memory traffic; meanwhile tiling to `simd_width` guarantees full‐width vector FMAs and lets hardware prefetchers coalesce the otherwise indirect gathers from `X`, and since each row is independent this naturally parallelizes over threads with minimal synchronization.
 
 ---
 
