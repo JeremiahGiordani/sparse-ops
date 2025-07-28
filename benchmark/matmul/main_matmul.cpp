@@ -1,7 +1,7 @@
 // benchmark/matmul/main_matmul.cpp
 //
 // Entry point for benchmarking MKL SpMM (sparse×dense) and
-// QuasiDense mat‑mul vs. a dense BLAS GEMM.
+// Ellpack mat‑mul vs. a dense BLAS GEMM.
 //
 // Usage:
 //   ./sparse_matmul_bench \
@@ -33,7 +33,7 @@ double benchmark_mkl_spmm(const BenchmarkData &data,
                           int C,
                           int runs);
 
-double benchmark_quasi_matmul(const BenchmarkData &data,
+double benchmark_ellpack_matmul(const BenchmarkData &data,
                               const std::vector<float> &X,
                               std::vector<float> &Y,
                               int C,
@@ -127,9 +127,9 @@ int main(int argc, char** argv) {
     double t_mkl_spmm = benchmark_mkl_spmm(data, X, Y, C, runs);
     std::cout << "MKL sparse×dense  : " << t_mkl_spmm << " µs\n";
 
-    // 2) QuasiDense sparse×dense
-    double t_quasi_mm = benchmark_quasi_matmul(data, X, Y, C, runs);
-    std::cout << "QuasiDense matmul : " << t_quasi_mm << " µs\n";
+    // 2) Ellpack sparse×dense
+    double t_ellpack_mm = benchmark_ellpack_matmul(data, X, Y, C, runs);
+    std::cout << "Ellpack matmul    : " << t_ellpack_mm << " µs\n";
 
     // 3) Dense BLAS GEMM
     double t_blas_mm = benchmark_mkl_gemm(data, X, Y, C, runs);

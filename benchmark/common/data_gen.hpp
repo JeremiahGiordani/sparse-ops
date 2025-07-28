@@ -5,15 +5,15 @@
 #include <vector>
 #include <random>
 #include <mkl.h>                 // for MKL_INT
-#include "quasi_dense_encoder.hpp"  // for QuasiDense
+#include "ellpack_encoder.hpp"  // for Ellpack
 
-/// Holds both the CSR data for MKL and the QuasiDense object
+/// Holds both the CSR data for MKL and the Ellpack object
 struct BenchmarkData {
     int64_t               M, N;        // dims
     std::vector<MKL_INT>  row_ptr;     // size M+1
     std::vector<MKL_INT>  col_ind;     // size = #nonzeros
     std::vector<float>    values;      // size = #nonzeros
-    QuasiDense            Q;           // QuasiDense handle
+    Ellpack               E;           // Ellpack handle
     std::vector<float>    Wdense;
 };
 
@@ -21,7 +21,7 @@ struct BenchmarkData {
  * @brief Generate a random M×N matrix with given sparsity, then
  *        build both:
  *          1) CSR arrays (row_ptr, col_ind, values)
- *          2) QuasiDense Q = convert_to_quasi_dense(...)
+ *          2) Ellpack E = convert_to_ellpack(...)
  *
  * @param M            Number of rows
  * @param N            Number of cols

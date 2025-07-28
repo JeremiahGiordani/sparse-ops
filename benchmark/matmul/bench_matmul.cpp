@@ -9,7 +9,7 @@
 #include <mkl.h>          // MKL_INT, CBLAS, threading control
 
 #include "data_gen.hpp"                  // common/generate_data, BenchmarkData
-#include "bilinear_diagonal_matmul.hpp"  // quasi_dense_matmul
+#include "ellpack_matmul.hpp"  // ellpack_matmul
 
 /// Benchmark MKL SpMM: Y = A*X, where A is CSR sparse, X is dense.
 /// Returns median runtime in microseconds.
@@ -86,23 +86,23 @@ double benchmark_mkl_spmm(const BenchmarkData &data,
     return *mid;
 }
 
-/// Benchmark our QuasiDense mat‑mul: Y = Q * X.
+/// Benchmark our Ellpack mat‑mul: Y = E * X.
 /// Returns median runtime in microseconds.
-double benchmark_quasi_matmul(const BenchmarkData &data,
-                              const std::vector<float> &X,
-                              std::vector<float> &Y,
-                              int C,
+double benchmark_ellpack_matmul(const BenchmarkData &data,
+                                const std::vector<float> &X,
+                                std::vector<float> &Y,
+                                int C,
                               int runs)
 {
     // 1) Warm‑up
-    quasi_dense_matmul(data.Q, X.data(), C, nullptr, Y.data());
+    ellpack_matmul(data.E, X.data(), C, nullptr, Y.data());
 
     // 2) Timed loop
     std::vector<double> times;
     times.reserve(runs);
     for (int i = 0; i < runs; ++i) {
         auto t0 = std::chrono::high_resolution_clock::now();
-        quasi_dense_matmul(data.Q, X.data(), C, nullptr, Y.data());
+        ellpack_matmul(data.E, X.data(), C, nullptr, Y.data());
         auto t1 = std::chrono::high_resolution_clock::now();
         times.push_back(
             std::chrono::duration<double, std::micro>(t1 - t0).count()

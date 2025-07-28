@@ -5,14 +5,14 @@
 #include <cstdint>
 #include <mkl.h>  
 
-// include your QuasiDense encoder header
-#include "quasi_dense_encoder.hpp"
+// include your Ellpack encoder header
+#include "ellpack_encoder.hpp"
 
 /**
  * @brief Generate a random M×N matrix with given sparsity, then
  *        build both:
  *          1) CSR arrays (row_ptr, col_ind, values)
- *          2) QuasiDense Q = convert_to_quasi_dense(W, M, N)
+ *          2) Ellpack E = convert_to_ellpack(W, M, N)
  *
  * @param M            Number of rows
  * @param N            Number of cols
@@ -84,13 +84,13 @@ BenchmarkData generate_data(int64_t M,
         row_ptr[i + 1] = row_ptr[i] + nnz_row;
     }
 
-    // 3) Build QuasiDense using our encoder
+    // 3) Build Ellpack using our encoder
     //    Assumes you have a free function:
-    //      QuasiDense convert_to_quasi_dense(const std::vector<float>& W,
+    //      Ellpack convert_to_ellpack(const std::vector<float>& W,
     //                                        uint32_t m, uint32_t n);
-    QuasiDense Q = convert_to_quasi_dense(W.data(), uint32_t(M), uint32_t(N));
+    Ellpack E = convert_to_ellpack(W.data(), uint32_t(M), uint32_t(N));
 
     return BenchmarkData{M, N, std::move(row_ptr),
                          std::move(col_ind), std::move(values),
-                         std::move(Q), std::move(W)};
+                         std::move(E), std::move(W)};
 }

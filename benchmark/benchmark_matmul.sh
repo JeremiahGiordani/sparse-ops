@@ -6,14 +6,14 @@
 # ---- Configurable params ----
 M=2000
 N=2000
-C=128
+C=120
 SPARSITY=0.80
 WARMUPS=5       # # of dummy runs to warm pages, threads, freq
 RUNS=10
 OMP_THREADS=8
 THREADS=8
 SEED=44
-IRREGULAR=1     # set to 1 if you want the last row fully dense
+IRREGULAR=0    # set to 1 if you want the last row fully dense
 # ------------------------------
 
 # (Optional) Pin to cores 0–7; comment out if not available

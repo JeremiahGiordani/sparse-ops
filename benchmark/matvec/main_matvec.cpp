@@ -1,7 +1,7 @@
 // benchmark/main.cpp
 //
 // Entry point for benchmarking MKL CSR sparse‐matrix–vector multiply
-// vs. our QuasiDense backend’s matvec.
+// vs. our Ellpack backend’s matvec.
 //
 // Usage:
 //   ./benchmark \
@@ -32,7 +32,7 @@ double benchmark_mkl_matvec(BenchmarkData &data,
                             std::vector<float> &y,
                             int runs);
 
-double benchmark_quasi_matvec(BenchmarkData &data,
+double benchmark_ellpack_matvec(BenchmarkData &data,
                               const std::vector<float> &x,
                               std::vector<float> &y,
                               int runs);
@@ -99,7 +99,7 @@ int main(int argc, char** argv) {
         << "OpenMP threads:  " << omp_threads << "\n"
         << "RNG seed:        " << seed << "\n\n";
 
-    // 1) Generate the data (CSR + QuasiDense)
+    // 1) Generate the data (CSR + Ellpack)
     auto data = generate_data(M, N, sparsity, seed, irregular);
 
     // 2) Create a random input vector x
@@ -117,9 +117,9 @@ int main(int argc, char** argv) {
     double t_mkl = benchmark_mkl_matvec(data, x, y, runs);
     std::cout << "MKL sparse matvec:   " << t_mkl   << " µs\n";
 
-    // 5) Benchmark QuasiDense
-    double t_quasi = benchmark_quasi_matvec(data, x, y, runs);
-    std::cout << "QuasiDense matvec:   " << t_quasi << " µs\n";
+    // 5) Benchmark Ellpack
+    double t_ellpack = benchmark_ellpack_matvec(data, x, y, runs);
+    std::cout << "Ellpack matvec:      " << t_ellpack << " µs\n";
 
     // 6) Benchmark MKL dense matvec
     double t_mkl_dense = benchmark_mkl_dense_matvec(data, x, y, runs);

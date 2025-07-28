@@ -1,12 +1,12 @@
 # Build a small static library with data_gen & encoder
 add_library(benchmark_common STATIC
     data_gen.cpp
-    ${CMAKE_SOURCE_DIR}/../src/quasi_dense_encoder.cpp
-    ${CMAKE_SOURCE_DIR}/../src/bilinear_diagonal_matmul.cpp
-    ${CMAKE_SOURCE_DIR}/../src/bilinear_diagonal_matvec.cpp
+    ${CMAKE_SOURCE_DIR}/../src/ellpack_encoder.cpp
+    ${CMAKE_SOURCE_DIR}/../src/ellpack_matmul.cpp
+    ${CMAKE_SOURCE_DIR}/../src/ellpack_matvec.cpp
 )
 
-# Expose this directory for headers like data_gen.hpp, quasi_dense_encoder.hpp
+# Expose this directory for headers like data_gen.hpp, ellpack_encoder.hpp
 target_include_directories(benchmark_common PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_SOURCE_DIR}/../include

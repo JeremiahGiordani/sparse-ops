@@ -1,7 +1,7 @@
 // benchmark/bench_matvec.cpp
 //
 // Implements timing hooks for MKL’s CSR sparse‐matrix–vector multiply
-// vs. our QuasiDense backend’s matvec.
+// vs. our Ellpack backend’s matvec.
 
 #include <chrono>
 #include <vector>
@@ -17,9 +17,9 @@
 // Include data generator (produces BenchmarkData)
 #include "data_gen.hpp"
 
-// QuasiDense encoder & matvec API
-#include "quasi_dense_encoder.hpp"
-#include "bilinear_diagonal_matvec.hpp"
+// Ellpack encoder & matvec API
+#include "ellpack_encoder.hpp"
+#include "ellpack_matvec.hpp"
 
 /// Run MKL CSR matvec [y = A·x] for `runs` repetitions, return median latency (μs)
 double benchmark_mkl_matvec(BenchmarkData &data,
@@ -74,37 +74,37 @@ double benchmark_mkl_matvec(BenchmarkData &data,
     return times[times.size()/2];
 }
 
-/// Run QuasiDense matvec [y = Q·x] for `runs` repetitions, return median latency (μs)
-double benchmark_quasi_matvec(BenchmarkData &data,
+/// Run Ellpack matvec [y = E·x] for `runs` repetitions, return median latency (μs)
+double benchmark_ellpack_matvec(BenchmarkData &data,
                               const std::vector<float> &x,
                               std::vector<float> &y,
                               int runs)
 {
     {
-    const auto &Q = data.Q;
-    if (Q.m * Q.r != Q.idx.size()) {
+    const auto &E = data.E;
+    if (E.m * E.r != E.idx.size()) {
         std::cerr << "Unexpected idx buffer size! "
-                << "Q.m*Q.r=" << Q.m*Q.r
-                << " but idx.size()=" << Q.idx.size() << "\n";
+                << "E.m*E.r=" << E.m*E.r
+                << " but idx.size()=" << E.idx.size() << "\n";
         std::abort();
     }
-    for (uint32_t i = 0; i < Q.m * Q.r; ++i) {
-        if (Q.idx[i] >= Q.n) {
+    for (uint32_t i = 0; i < E.m * E.r; ++i) {
+        if (E.idx[i] >= E.n) {
         std::cerr << "Out‑of‑bounds index at packed pos " << i
-                    << ": idx=" << Q.idx[i] << ", but n=" << Q.n << "\n";
+                    << ": idx=" << E.idx[i] << ", but n=" << E.n << "\n";
         std::abort();
         }
     }
     }
     // 1) Warm‑up
-    quasi_dense_matvec(data.Q, x.data(), nullptr, y.data());
+    ellpack_matvec(data.E, x.data(), nullptr, y.data());
 
     // 2) Time loop
     std::vector<double> times;
     times.reserve(runs);
     for (int i = 0; i < runs; ++i) {
         auto t0 = std::chrono::high_resolution_clock::now();
-        quasi_dense_matvec(data.Q, x.data(), nullptr, y.data());
+        ellpack_matvec(data.E, x.data(), nullptr, y.data());
         auto t1 = std::chrono::high_resolution_clock::now();
         times.push_back(
             std::chrono::duration<double, std::micro>(t1 - t0).count()
