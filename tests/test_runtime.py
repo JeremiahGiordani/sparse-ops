@@ -6,6 +6,7 @@ import torch.nn as nn
 import torch.nn.utils.prune as prune
 import onnxruntime as ort
 import time
+import os
 
 class M(nn.Module):
     def __init__(self, fc_1_in=8, fc_1_out=16, fc_2_in=16, fc_2_out=4): 
@@ -21,18 +22,18 @@ FC_1_OUT = 1000
 FC_2_IN  = FC_1_OUT
 FC_2_OUT = 4
 INPUT_DIM  = FC_1_IN
-SPARSITY   = 0.9
-N_RUNS     = 1000     # <-- number of repetitions
+SPARSITY   = 0.5
+N_RUNS     = 100   # <-- number of repetitions
 SEED       = 42
 
 def average_runtime(func, n_runs=N_RUNS):
-    times = []
+    total = 0.0
     for _ in range(n_runs):
         t0 = time.perf_counter()
         func()
         t1 = time.perf_counter()
-        times.append(t1 - t0)
-    return np.mean(times), np.std(times)
+        total += t1 - t0
+    return total / n_runs
 
 
 torch.manual_seed(SEED)
@@ -43,6 +44,9 @@ prune.random_unstructured(m.fc1, name="weight", amount=SPARSITY)
 prune.random_unstructured(m.fc2, name="weight", amount=SPARSITY)
 # Save the pruned model
 torch.onnx.export(m, dummy, "test_fc.onnx", opset_version=14)
+
+num_threads = int(os.environ.get("OMP_NUM_THREADS", "1"))
+torch.set_num_threads(num_threads)
 
 model = OnnxSparseModel("test_fc.onnx")
 
@@ -63,7 +67,7 @@ def custom_run():
 def onnx_run():
     return session.run(None, {input_name: x_onnx})
 
-for _ in range(50):
+for _ in range(500):
     custom_run(); torch_run(); onnx_run()
 
 y_ref = torch_run().detach().numpy()
@@ -78,9 +82,6 @@ print("=== Benchmarking ===")
 print(f"=== Average runtime over {N_RUNS} runs ===")
 print(f"=== FC1 dims {FC_1_IN}x{FC_1_OUT}, FC2 dims {FC_2_IN}x{FC_2_OUT} ===")
 print(f"=== Sparsity {SPARSITY:.2%} ===")
-average_runtime_torch, std_torch = average_runtime(torch_run)
-print(f"[Torch]      {average_runtime_torch*1000:.3f} ms ± {std_torch*1000:.3f} ms")
-average_runtime_custom, std_custom = average_runtime(custom_run)
-print(f"[Sparse Model] {average_runtime_custom*1000:.3f} ms ± {std_custom*1000:.3f} ms")
-average_runtime_onnx, std_onnx = average_runtime(onnx_run)
-print(f"[ONNX]        {average_runtime_onnx*1000:.3f} ms ± {std_onnx*1000:.3f} ms")
+print(f"[PyTorch]      {average_runtime(torch_run)*1000:.3f} ms")
+print(f"[Sparse Model] {average_runtime(custom_run)*1000:.3f} ms")
+print(f"[ONNX]        {average_runtime(onnx_run)*1000:.3f} ms")
