@@ -31,15 +31,15 @@ def generate_sparse_matrix(M, K, sparsity=0.3):
     (2000, 2000, 0.3),  # Very large matrix
     (3000, 3000, 0.4),  # Very large sparse matrix
 ])
-def test_bilinear_diagonal_multiplication_correctness_parametrized(M, K, sparsity):
+def test_ellpack_multiplication_correctness_parametrized(M, K, sparsity):
     sparse_matrix = generate_sparse_matrix(M, K, sparsity)
-    quasi_dense = sparseops_backend.convert_to_quasi_dense(sparse_matrix)
+    ellpack = sparseops_backend.convert_to_ellpack(sparse_matrix)
     input_vector = np.random.rand(K).astype(np.float32)
-    Q = quasi_dense
+    E = ellpack
     bias = np.random.rand(M).astype(np.float32)
 
     # Test the bilinear diagonal multiplication
-    y = sparseops_backend.bilinear_diagonal_matvec(Q, input_vector, bias)
+    y = sparseops_backend.ellpack_matvec(E, input_vector, bias)
 
     y_expected = sparse_matrix @ input_vector + bias
     assert y.shape == (M,), "Output shape mismatch for parametrized test"

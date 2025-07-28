@@ -1,4 +1,4 @@
-#include "bilinear_diagonal_matvec.hpp"
+#include "ellpack_matvec.hpp"
 #include <cstring>  // memcpy, memset
 #include <immintrin.h>
 #include <omp.h>
@@ -14,15 +14,15 @@ static inline bool supports_avx512() {
 #endif
 }
 
-void quasi_dense_matmul(
-    const QuasiDense& Q,
+void ellpack_matmul(
+    const Ellpack&    E,
     const float*      X,      // [N × C], row-major
     uint32_t          C,
     const float*      bias,   // [M]
     float*            Y       // [M × C], row-major
 ) {
-    const uint32_t m = Q.m;
-    const uint32_t r = Q.r;
+    const uint32_t m = E.m;
+    const uint32_t r = E.r;
     const char* env = std::getenv("OMP_NUM_THREADS");
     int nth       = env ? std::atoi(env) : omp_get_max_threads();
     const bool use_avx512 = supports_avx512();
@@ -32,7 +32,7 @@ void quasi_dense_matmul(
     for (uint32_t i = 0; i < m; ++i) {
         float* yrow = Y + size_t(i) * C;
         size_t base = size_t(i) * r;
-        uint32_t count = Q.nnz[i];
+        uint32_t count = E.nnz[i];
 
         // 1) init output row
         if (bias) {
@@ -54,8 +54,8 @@ void quasi_dense_matmul(
 
                 // accumulate each NNZ into the block
                 for (uint32_t j = 0; j < count; ++j) {
-                    float    wj   = Q.Wd.ptr[base + j];
-                    uint32_t col  = Q.idx [base + j];
+                    float    wj   = E.Wd.ptr[base + j];
+                    uint32_t col  = E.idx [base + j];
                     const float* xblk = X + size_t(col) * C + cb;
 
                     __m512 wv = _mm512_set1_ps(wj);
@@ -70,8 +70,8 @@ void quasi_dense_matmul(
         } else {
             // simple scalar fallback
             for (uint32_t j = 0; j < count; ++j) {
-                float    wj  = Q.Wd.ptr[base + j];
-                uint32_t col = Q.idx [base + j];
+                float    wj  = E.Wd.ptr[base + j];
+                uint32_t col = E.idx [base + j];
                 const float* xrow = X + size_t(col) * C;
                 for (uint32_t c = 0; c < C; ++c) {
                     yrow[c] += wj * xrow[c];

@@ -1,6 +1,6 @@
-// src/bilinear_diagonal_matvec.cpp (updated for AlignedBuffer format)
-#include "bilinear_diagonal_matvec.hpp"
-#include "quasi_dense_encoder.hpp"
+// src/ellpack_matvec.cpp
+#include "ellpack_matvec.hpp"
+#include "ellpack_encoder.hpp"
 #include <cstring>       // memcpy
 #include <algorithm>     // fill
 #include <immintrin.h>   // AVX2/AVX-512 intrinsics + prefetch + maskload
@@ -17,14 +17,14 @@ static inline bool supports_avx512() {
 #endif
 }
 
-void quasi_dense_matvec(
-    const QuasiDense& Q,
+void ellpack_matvec(
+    const Ellpack&    E,
     const float*      x,
     const float*     bias,
     float*           y
 ) {
-    const uint32_t m = Q.m;
-    const uint32_t r = Q.r;
+    const uint32_t m = E.m;
+    const uint32_t r = E.r;
 
     // Initialize output y: copy bias or zero
     if (bias) {
@@ -43,17 +43,17 @@ void quasi_dense_matvec(
     if (use512) {
         #pragma omp parallel for num_threads(num_threads) schedule(static)
         for (uint32_t i = 0; i < m; ++i) {
-            size_t base = size_t(i) * Q.r;
-            // 1) gather into the row‐buffer that was preallocated in Q.Xt
-            const uint32_t* idxRow = Q.idx.data() + base;
-            float*           xrow  = Q.Xt.ptr  + base;
-            for (uint32_t j = 0; j < Q.r; ++j) {
+            size_t base = size_t(i) * E.r;
+            // 1) gather into the row‐buffer that was preallocated in E.Xt
+            const uint32_t* idxRow = E.idx.data() + base;
+            float*           xrow  = E.Xt.ptr  + base;
+            for (uint32_t j = 0; j < E.r; ++j) {
                 xrow[j] = x[ idxRow[j] ];
             }
 
-            const float* wrow = Q.Wd.ptr + base;
-            uint32_t      r    = Q.r;
-            uint32_t count     = Q.nnz[i];   
+            const float* wrow = E.Wd.ptr + base;
+            uint32_t      r    = E.r;
+            uint32_t count     = E.nnz[i];
             uint32_t      j    = 0;
             __m512        accv = _mm512_setzero_ps();
 
@@ -63,7 +63,7 @@ void quasi_dense_matvec(
                 _mm_prefetch((const char*)(next_wrow),      _MM_HINT_T0);
                 _mm_prefetch((const char*)(next_wrow + r),  _MM_HINT_T0);  // also prefetch next xrow if desired
 
-                const float* next_xrow = Q.Xt.ptr + (base + r);
+                const float* next_xrow = E.Xt.ptr + (base + r);
                 _mm_prefetch((const char*)(next_xrow),     _MM_HINT_T0);
                 _mm_prefetch((const char*)(next_xrow + r), _MM_HINT_T0);
                 
@@ -101,11 +101,11 @@ void quasi_dense_matvec(
     } else {
         #pragma omp parallel for num_threads(num_threads) schedule(static)
         for (uint32_t i = 0; i < m; ++i) {
-            const float* wrow = Q.Wd.ptr + size_t(i) * r;
-            size_t base = size_t(i) * Q.r;
-            const uint32_t* idxRow = Q.idx.data() + base;
-            float* xrow  = Q.Xt.ptr  + base;
-            for (uint32_t j = 0; j < Q.r; ++j) {
+            const float* wrow = E.Wd.ptr + size_t(i) * r;
+            size_t base = size_t(i) * E.r;
+            const uint32_t* idxRow = E.idx.data() + base;
+            float* xrow  = E.Xt.ptr  + base;
+            for (uint32_t j = 0; j < E.r; ++j) {
                 xrow[j] = x[ idxRow[j] ];
             }
 

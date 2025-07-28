@@ -3,7 +3,7 @@
 #include <cstdint>
 #include "aligned_buffer.hpp"
 
-struct QuasiDense {
+struct Ellpack {
     uint32_t m;  ///< rows
     uint32_t n;  ///< original columns
     uint32_t r;  ///< max nonzeros per row
@@ -13,7 +13,7 @@ struct QuasiDense {
     AlignedBuffer           Xt;      ///< m*r floats (gather buffer)
     std::vector<uint32_t>   nnz;     ///< m counts
 
-    QuasiDense(uint32_t _m, uint32_t _n, uint32_t _r)
+    Ellpack(uint32_t _m, uint32_t _n, uint32_t _r)
       : m(_m), n(_n), r(_r),
         Wd(size_t(_m)*_r),
         idx(size_t(_m)*_r),
@@ -23,9 +23,9 @@ struct QuasiDense {
 };
 
 
-/// Encode a dense m×n matrix into quasi‑dense form.
-QuasiDense convert_to_quasi_dense(const float* W, uint32_t m, uint32_t n);
+/// Encode a dense m×n matrix into ELLPACK form.
+Ellpack convert_to_ellpack(const float* W, uint32_t m, uint32_t n);
 
-/// Decode quasi‑dense back into a full dense m×n matrix.
+/// Decode ELLPACK back into a full dense m×n matrix.
 /// W_out must point to an array of size m*n.
-void decode_from_quasi_dense(const QuasiDense& Q, float* W_out);
+void decode_from_ellpack(const Ellpack& E, float* W_out);

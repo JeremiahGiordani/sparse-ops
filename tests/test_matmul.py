@@ -17,10 +17,16 @@ from python.cpp_backend import (
 # ----------------------------------------------------------------------
 # Experiment parameters
 # ----------------------------------------------------------------------
-INPUT_DIM  = 147
-OUTPUT_DIM = 64
-C = 12544
-SPARSITY   = 0.95
+# Resnet toy example dimensions:
+# INPUT_DIM  = 147
+# OUTPUT_DIM = 64
+# C = 12544
+
+# Benchmark dimensions:
+INPUT_DIM  = 2000
+OUTPUT_DIM = 2000
+C = 1
+SPARSITY   = 0.90
 N_RUNS     = 100     # <-- number of repetitions
 SEED       = 42
 # ----------------------------------------------------------------------
@@ -48,7 +54,7 @@ input_np  = input_t.detach().cpu().numpy().astype(np.float32)
 
 csr_mat    = sp.csr_matrix(weight)            # build once
 
-quasi_dense = encode(weight_np)
+ellpack = encode(weight_np)
 
 
 # num_threads = int(os.environ.get("OMP_NUM_THREADS", "1"))
@@ -81,7 +87,7 @@ def scipy_run():
     return csr_mat.dot(input_mat) + bias_np
 
 def bilinear_diagonal_run():
-    return matmul(quasi_dense, input_mat, bias_np)
+    return matmul(ellpack, input_mat, bias_np)
 
 # ----------------------------------------------------------------------
 # Correctness check (one-shot)

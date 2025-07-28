@@ -51,14 +51,14 @@ input_np  = input_t.detach().cpu().numpy().astype(np.float32)
 
 csr_mat    = sp.csr_matrix(weight)            # build once
 
-quasi_dense = encode(weight_np)
+ellpack = encode(weight_np)
 
 
 num_threads = int(os.environ.get("OMP_NUM_THREADS", "1"))
 torch.set_num_threads(num_threads)
 # num_threads = None  # Disable threading for this test
 
-print(f"MAX NNZ in row: {quasi_dense.r}")
+print(f"MAX NNZ in row: {ellpack.r}")
 # Compute the minimum number of non-zero entries (NNZ) in any row, using weight_np
 print(f"MIN NNZ in row: {np.min(np.sum(weight_np != 0, axis=1))}")
 
@@ -88,10 +88,7 @@ def scipy_run():
     return csr_mat.dot(input_vec) + bias
 
 def bilinear_diagonal_run():
-    return matvec(quasi_dense, input_np, bias_np)
-    
-    # return run_quasi_dense_matvec_hidden(quasi_dense, quasi_dense_next, bias_np, threads=num_threads)
-
+    return matvec(ellpack, input_np, bias_np)
 # ----------------------------------------------------------------------
 # Correctness check (one-shot)
 # ----------------------------------------------------------------------

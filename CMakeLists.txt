@@ -48,9 +48,9 @@ find_package(Python3 COMPONENTS Development REQUIRED)
 # ──────────────────────────────────────────────────────────────
 add_library(sparseops_backend MODULE
     src/bindings.cpp
-    src/quasi_dense_encoder.cpp
-    src/bilinear_diagonal_matvec.cpp
-    src/bilinear_diagonal_matmul.cpp)
+    src/ellpack_encoder.cpp
+    src/ellpack_matvec.cpp
+    src/ellpack_matmul.cpp)
 target_include_directories(sparseops_backend PRIVATE ${PYBIND11_INCLUDES})
 # Naming: produce "sparseops_backend.so" directly
 set_target_properties(sparseops_backend PROPERTIES
