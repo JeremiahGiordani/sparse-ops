@@ -6,12 +6,12 @@
 # ---- Configurable params ----
 M=2000
 N=2000
-SPARSITY=0.70
+SPARSITY=0.90
 WARMUPS=5       # # of dummy runs to warm pages, threads, freq
 RUNS=10
-OMP_THREADS=8
-THREADS=1
-SEED=44
+OMP_THREADS=1
+MKL_THREADS=1
+SEED=42
 # ------------------------------
 
 # 1) Pin to cores 0–7 (so threads never hop across sockets / NUMA)
@@ -22,21 +22,22 @@ SEED=44
 
 # 2) Export thread counts & affinity knobs
 export OMP_NUM_THREADS=${OMP_THREADS}
-export MKL_NUM_THREADS=${THREADS}
+export MKL_NUM_THREADS=${MKL_THREADS}
 export MKL_DYNAMIC=FALSE
 export OMP_PLACES=cores
 export OMP_PROC_BIND=spread
+export KMP_BLOCKTIME=0
 # export KMP_AFFINITY="granularity=fine,compact"
 
 # 3) A little warm up to spin up threads, fault in pages, prime caches
 echo "Warming up (${WARMUPS} runs)…"
 for i in $(seq 1 $WARMUPS); do
   $CMD_PREFIX ./build/matvec/sparse_matvec_bench \
-    --M ${M} --N ${N} --sparsity ${SPARSITY} --runs 1 --threads ${THREADS} --omp-threads ${OMP_THREADS} --seed ${SEED} \
+    --M ${M} --N ${N} --sparsity ${SPARSITY} --runs 1 --mkl-threads ${MKL_THREADS} --omp-threads ${OMP_THREADS} --seed ${SEED} \
     > /dev/null
 done
 
 # 4) The real benchmark
 echo "Running real benchmark (${RUNS} runs)…"
 $CMD_PREFIX ./build/matvec/sparse_matvec_bench \
-  --M ${M} --N ${N} --sparsity ${SPARSITY} --runs ${RUNS} --threads ${THREADS} --omp-threads ${OMP_THREADS} --seed ${SEED} \
+  --M ${M} --N ${N} --sparsity ${SPARSITY} --runs ${RUNS} --mkl-threads ${MKL_THREADS} --omp-threads ${OMP_THREADS} --seed ${SEED} \

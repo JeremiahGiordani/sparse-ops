@@ -11,7 +11,7 @@ SPARSITY=0.80
 WARMUPS=5       # # of dummy runs to warm pages, threads, freq
 RUNS=10
 OMP_THREADS=8
-THREADS=8
+MKL_THREADS=8
 SEED=44
 IRREGULAR=0    # set to 1 if you want the last row fully dense
 # ------------------------------
@@ -21,7 +21,7 @@ IRREGULAR=0    # set to 1 if you want the last row fully dense
 
 # Export thread counts & affinity knobs
 export OMP_NUM_THREADS=${OMP_THREADS}
-export MKL_NUM_THREADS=${THREADS}
+export MKL_NUM_THREADS=${MKL_THREADS}
 export MKL_DYNAMIC=FALSE
 export OMP_PLACES=cores
 export OMP_PROC_BIND=spread
@@ -33,7 +33,7 @@ for i in $(seq 1 $WARMUPS); do
   $CMD_PREFIX ./build/matmul/sparse_matmul_bench \
     --M ${M} --N ${N} --C ${C} \
     --sparsity ${SPARSITY} --runs 1 \
-    --threads ${THREADS} --omp-threads ${OMP_THREADS} \
+    --mkl-threads ${MKL_THREADS} --omp-threads ${OMP_THREADS} \
     --seed ${SEED} --irregular ${IRREGULAR} \
     > /dev/null
 done
@@ -42,5 +42,5 @@ echo "Running real benchmark (${RUNS} runs)…"
 $CMD_PREFIX ./build/matmul/sparse_matmul_bench \
   --M ${M} --N ${N} --C ${C} \
   --sparsity ${SPARSITY} --runs ${RUNS} \
-  --threads ${THREADS} --omp-threads ${OMP_THREADS} \
+  --mkl-threads ${MKL_THREADS} --omp-threads ${OMP_THREADS} \
   --seed ${SEED} --irregular ${IRREGULAR}

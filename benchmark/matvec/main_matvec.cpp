@@ -9,7 +9,8 @@
 //     --N 1000 \
 //     --sparsity 0.9 \
 //     --runs 100 \
-//     --threads 4 \
+//     --mkl-threads 4 \
+//     --omp-threads 4 \
 //     --seed 42
 
 #include <iostream>
@@ -51,7 +52,7 @@ int main(int argc, char** argv) {
     int64_t N         = 1000;
     double  sparsity  = 0.9;
     int     runs      = 100;
-    int     threads   = 1;
+    int mkl_threads   = 1;
     int   omp_threads = 1;
     uint64_t seed     = 42;
     bool irregular = false;
@@ -67,8 +68,8 @@ int main(int argc, char** argv) {
             sparsity = std::stod(argv[++i]);
         } else if (arg == "--runs" && i+1 < argc) {
             runs = std::stoi(argv[++i]);
-        } else if (arg == "--threads" && i+1 < argc) {
-            threads = std::stoi(argv[++i]);
+        } else if (arg == "--mkl-threads" && i+1 < argc) {
+            mkl_threads = std::stoi(argv[++i]);
         } else if (arg == "--omp-threads" && i+1 < argc) {
             omp_threads = std::stoi(argv[++i]);
         } else if (arg == "--seed" && i+1 < argc) {
@@ -79,15 +80,16 @@ int main(int argc, char** argv) {
             std::cerr << "Unknown or incomplete arg: " << arg << "\n"
                       << "Usage: " << argv[0]
                       << " [--M rows] [--N cols] [--sparsity p]"
-                         " [--runs r] [--threads t] [--seed s] [--irregular 0|1]\n";
+                         " [--runs r] [--mkl-threads t] [--omp-threads o]"
+                         " [--seed s] [--irregular 0|1]\n";
             return 1;
         }
     }
 
     // Fix thread counts
-    mkl_set_num_threads(threads);
+    mkl_set_num_threads(mkl_threads);
     omp_set_num_threads(omp_threads);
-    mkl_set_num_threads_local(threads);
+    mkl_set_num_threads_local(mkl_threads);
     mkl_set_dynamic(0);
 
     std::cout
@@ -95,9 +97,10 @@ int main(int argc, char** argv) {
         << "Matrix dims:     " << M << "×" << N << "\n"
         << "Sparsity:        " << sparsity << "\n"
         << "Repetitions:     " << runs << "\n"
-        << "Threads:         " << threads << "\n"
+        << "MKL Threads:     " << mkl_threads << "\n"
         << "OpenMP threads:  " << omp_threads << "\n"
-        << "RNG seed:        " << seed << "\n\n";
+        << "RNG seed:        " << seed << "\n"
+        << "Irregular last row: " << (irregular ? "yes" : "no") << "\n\n";
 
     // 1) Generate the data (CSR + Ellpack)
     auto data = generate_data(M, N, sparsity, seed, irregular);
@@ -117,13 +120,13 @@ int main(int argc, char** argv) {
     double t_mkl = benchmark_mkl_matvec(data, x, y, runs);
     std::cout << "MKL sparse matvec:   " << t_mkl   << " µs\n";
 
-    // 5) Benchmark Ellpack
-    double t_ellpack = benchmark_ellpack_matvec(data, x, y, runs);
-    std::cout << "Ellpack matvec:      " << t_ellpack << " µs\n";
-
-    // 6) Benchmark MKL dense matvec
+    // 5) Benchmark MKL dense matvec
     double t_mkl_dense = benchmark_mkl_dense_matvec(data, x, y, runs);
     std::cout << "MKL dense matvec:    " << t_mkl_dense << " µs\n";
+
+    // 6) Benchmark Ellpack
+    double t_ellpack = benchmark_ellpack_matvec(data, x, y, runs);
+    std::cout << "Ellpack matvec:      " << t_ellpack << " µs\n";
 
     return 0;
 }

@@ -10,7 +10,7 @@
 //     --C 128  \
 //     --sparsity 0.9 \
 //     --runs 100 \
-//     --threads 4 \
+//     --mkl-threads 4 \
 //     --omp-threads 4 \
 //     --seed 42 \
 //     --irregular 0
@@ -53,7 +53,7 @@ int main(int argc, char** argv) {
     int     C        = 128;
     double  sparsity = 0.9;
     int     runs     = 100;
-    int     threads  = 1;
+    int     mkl_threads  = 1;
     int     omp_threads = 1;
     uint64_t seed    = 42;
     bool    irregular = false;
@@ -71,8 +71,8 @@ int main(int argc, char** argv) {
             sparsity = std::stod(argv[++i]);
         } else if (arg == "--runs" && i+1 < argc) {
             runs = std::stoi(argv[++i]);
-        } else if (arg == "--threads" && i+1 < argc) {
-            threads = std::stoi(argv[++i]);
+        } else if (arg == "--mkl-threads" && i+1 < argc) {
+            mkl_threads = std::stoi(argv[++i]);
         } else if (arg == "--omp-threads" && i+1 < argc) {
             omp_threads = std::stoi(argv[++i]);
         } else if (arg == "--seed" && i+1 < argc) {
@@ -84,7 +84,7 @@ int main(int argc, char** argv) {
                       << "Usage: " << argv[0]
                       << " --M <rows> --N <cols> --C <channels>"
                          " --sparsity <p> --runs <r>"
-                         " --threads <t> --omp-threads <o>"
+                         " --mkl-threads <t> --omp-threads <o>"
                          " --seed <s> --irregular <0|1>\n";
             return 1;
         }
@@ -92,7 +92,7 @@ int main(int argc, char** argv) {
 
     // set threading
     mkl_set_dynamic(0);
-    mkl_set_num_threads(threads);
+    mkl_set_num_threads(mkl_threads);
     omp_set_num_threads(omp_threads);
 
     std::cout
@@ -101,7 +101,7 @@ int main(int argc, char** argv) {
         << "Dense cols C:    " << C << "\n"
         << "Sparsity:        " << sparsity << "\n"
         << "Repetitions:     " << runs << "\n"
-        << "MKL threads:     " << threads << "\n"
+        << "MKL threads:     " << mkl_threads << "\n"
         << "OpenMP threads:  " << omp_threads << "\n"
         << "RNG seed:        " << seed << "\n"
         << "Irregular last row: " << irregular << "\n\n";
@@ -127,13 +127,13 @@ int main(int argc, char** argv) {
     double t_mkl_spmm = benchmark_mkl_spmm(data, X, Y, C, runs);
     std::cout << "MKL sparse×dense  : " << t_mkl_spmm << " µs\n";
 
-    // 2) Ellpack sparse×dense
-    double t_ellpack_mm = benchmark_ellpack_matmul(data, X, Y, C, runs);
-    std::cout << "Ellpack matmul    : " << t_ellpack_mm << " µs\n";
-
-    // 3) Dense BLAS GEMM
+    // 2) Dense BLAS GEMM
     double t_blas_mm = benchmark_mkl_gemm(data, X, Y, C, runs);
     std::cout << "BLAS dense GEMM   : " << t_blas_mm << " µs\n";
+
+    // 3) Ellpack sparse×dense
+    double t_ellpack_mm = benchmark_ellpack_matmul(data, X, Y, C, runs);
+    std::cout << "Ellpack matmul    : " << t_ellpack_mm << " µs\n";
 
     return 0;
 }
