@@ -9,7 +9,6 @@
 /// - x: Input tensor
 /// - bias: length m (if nullptr, y is zero‑initialized)
 /// - y: output buffer length m
-/// - threads: number of OpenMP threads (0 = automatic)
 void ellpack_matvec(
     const Ellpack&    E,
     const float*      x,

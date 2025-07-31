@@ -9,7 +9,6 @@
 /// - C: number of columns in X
 /// - bias: length‑m vector to add to each output column (nullptr ⇒ zero init)
 /// - Y: output buffer, size m×C (row‑major, column j starts at Y + j*m)
-/// - threads: OpenMP threads
 void ellpack_matmul(
     const Ellpack&    E,
     const float*      X,
