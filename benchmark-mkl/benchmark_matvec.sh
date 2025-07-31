@@ -9,8 +9,8 @@ N=2000
 SPARSITY=0.90
 WARMUPS=5       # # of dummy runs to warm pages, threads, freq
 RUNS=10
-OMP_THREADS=1
-MKL_THREADS=1
+OMP_THREADS=8
+MKL_THREADS=8
 SEED=42
 # ------------------------------
 

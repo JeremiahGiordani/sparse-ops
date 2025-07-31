@@ -7,7 +7,7 @@
 M=2000
 N=2000
 C=120
-SPARSITY=0.80
+SPARSITY=0.70
 WARMUPS=5       # # of dummy runs to warm pages, threads, freq
 RUNS=10
 OMP_THREADS=8
