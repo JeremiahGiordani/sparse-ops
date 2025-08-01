@@ -84,7 +84,11 @@ sess_opts.inter_op_num_threads  = num_threads
 model = SparseOnnxModel(onnx_path)
 
 # 2) ONNX Runtime session
-session = ort.InferenceSession(onnx_path, sess_options=sess_opts)
+session = ort.InferenceSession(
+    onnx_path,
+    sess_options=sess_opts,
+    providers=["CPUExecutionProvider"]
+)
 input_name = session.get_inputs()[0].name
 
 
