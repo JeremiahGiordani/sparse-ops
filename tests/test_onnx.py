@@ -38,13 +38,13 @@ class M(nn.Module):
 #  Configuration
 # ────────────────────────────────────────────────────────────────
 FC_1_IN, FC_1_OUT = 1000, 1000
-FC_2_IN, FC_2_OUT = FC_1_OUT, 120
+FC_2_IN, FC_2_OUT = FC_1_OUT, 12
 INPUT_DIM       = FC_1_IN
-SPARSITY        = 0.9
+SPARSITY        = 0.90
 N_RUNS          = 100
 SEED            = 42
 
-BATCH_DIM       = 50
+BATCH_DIM       = 2
 
 # ────────────────────────────────────────────────────────────────
 #  Prepare and export ONNX model
@@ -114,8 +114,7 @@ def torch_run():
 
 def custom_run():
     # returns shape (FC_2_OUT, 1) → reshape to (BATCH_DIM, FC_2_OUT)
-    Y = model.run(x_custom)
-    return Y.reshape(BATCH_DIM, FC_2_OUT)
+    return model.run(x_custom)
 
 def onnx_run():
     return session.run(None, {input_name: x_onnx})[0]  # returns (BATCH_DIM, FC_2_OUT)
@@ -133,8 +132,7 @@ y_onnx  = onnx_run()                   # shape (BATCH_DIM, FC_2_OUT)
 
 print("=== Verifying correctness ===")
 print("Torch vs ONNX Runtime:  ", np.allclose(y_ref,   y_onnx,  atol=1e-4))
-print("Torch vs SparseModel:   ", np.allclose(y_ref,   y_sp,    atol=1e-4))
-
+print("Torch vs SparseModel:   ", np.allclose(y_ref,   y_sp.T,    atol=1e-4))
 
 # ────────────────────────────────────────────────────────────────
 #  Benchmarking
