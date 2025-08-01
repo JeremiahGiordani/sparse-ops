@@ -56,62 +56,80 @@ SparseOnnxModel::SparseOnnxModel(const std::string &onnx_path) {
             throw std::runtime_error("Failed to parse ONNX model: " + onnx_path);
         }
     }
-
     const auto &graph = model.graph();
 
-    // 2) Build a map from initializer name -> TensorProto*
+    // 2) Build name→initializer map
     std::unordered_map<std::string, const onnx::TensorProto*> init_map;
     init_map.reserve(graph.initializer_size());
     for (const auto &init : graph.initializer()) {
         init_map[init.name()] = &init;
     }
 
-    // Temporary storage for biases before we pack into one buffer
+    // 3) Infer fixed batch dimension from first non-initializer input
+    batch_dim_ = 1;
+    for (const auto &vi : graph.input()) {
+        if (init_map.count(vi.name())) {
+            // this input is actually an initializer (constant), skip
+            continue;
+        }
+        if (!vi.has_type() || !vi.type().has_tensor_type()) {
+            throw std::runtime_error("Input '" + vi.name() +
+                "' has no tensor_type");
+        }
+        const auto &shape = vi.type().tensor_type().shape();
+        if (shape.dim_size() != 2) {
+            throw std::runtime_error("Expected 2D input (batch × features), got "
+                + std::to_string(shape.dim_size()) + "D for '" + vi.name() + "'");
+        }
+        const auto &dim0 = shape.dim(0);
+        if (!dim0.has_dim_value()) {
+            throw std::runtime_error("Dynamic batch dimension not supported");
+        }
+        batch_dim_ = static_cast<uint32_t>(dim0.dim_value());
+        break;
+    }
+
+    // Temporary staging for (type, ELLPACK, bias_vector)
     struct TempLayer {
-        LayerType            type;
-        Ellpack              E;
-        std::vector<float>   bias;    // empty if none
+        LayerType          type;
+        Ellpack            E;
+        std::vector<float> bias;  // may be empty
     };
     std::vector<TempLayer> temp_layers;
     temp_layers.reserve(graph.node_size());
-
-    // Track maximum rows (m) across all MatMul/Gemm layers
     max_rows_ = 0;
 
-    // 3) Walk the graph and build each layer
+    // 4) Walk the graph and record layers
     for (const auto &node : graph.node()) {
         const std::string &op = node.op_type();
         if (op == "MatMul" || op == "Gemm") {
-            // weight is input(1)
+            // weight initializer → input(1)
             auto itW = init_map.find(node.input(1));
             if (itW == init_map.end()) {
-                throw std::runtime_error("Weight initializer '"
-                                         + node.input(1)
-                                         + "' not found");
+                throw std::runtime_error("Weight initializer '" +
+                    node.input(1) + "' not found");
             }
-            const auto *W_tp = itW->second;
+            const onnx::TensorProto* W_tp = itW->second;
 
-            // parse weight tensor into a flat vector
+            // parse weight into vector
             std::vector<float> W_data;
             parseTensor(*W_tp, W_data);
 
-            // dims should be [M, N]
             if (W_tp->dims_size() != 2) {
                 throw std::runtime_error("Weight tensor must be 2D");
             }
             uint32_t M = static_cast<uint32_t>(W_tp->dims(0));
             uint32_t N = static_cast<uint32_t>(W_tp->dims(1));
 
-            // convert to ELLPACK once, at load time
+            // ELLPACK encode
             Ellpack E = convert_to_ellpack(W_data.data(), M, N);
 
-            // parse optional bias for Gemm
+            // optional bias for Gemm
             std::vector<float> bias_vec;
             if (op == "Gemm" && node.input_size() > 2) {
                 auto itB = init_map.find(node.input(2));
                 if (itB != init_map.end()) {
                     parseTensor(*itB->second, bias_vec);
-                    // bias_vec.size() should equal M
                 }
             }
 
@@ -121,46 +139,37 @@ SparseOnnxModel::SparseOnnxModel(const std::string &onnx_path) {
             max_rows_ = std::max(max_rows_, M);
 
         } else if (op == "Relu" || op == "Sigmoid" || op == "Tanh") {
-            LayerType t = (op == "Relu" ? LayerType::Relu
-                          : op == "Sigmoid" ? LayerType::Sigmoid
-                          : LayerType::Tanh);
-            // no E or bias needed
-            temp_layers.push_back({t, Ellpack(0u, 0u, 0u), {}});
+            LayerType t = (op == "Relu"    ? LayerType::Relu
+                          : op == "Sigmoid"? LayerType::Sigmoid
+                                            : LayerType::Tanh);
+            temp_layers.push_back({t, Ellpack(0u,0u,0u), {}});
         } else {
             throw std::runtime_error("Unsupported ONNX op: " + op);
         }
     }
 
-    // 4) Pack all biases into one contiguous buffer
+    // 5) Pack all biases into one buffer
     size_t total_bias = 0;
     for (auto &tl : temp_layers) {
         total_bias += tl.bias.size();
     }
-    bias_data_ = std::unique_ptr<float[]>(new float[total_bias]);
+    bias_data_.reset(new float[total_bias]);
     float *bias_ptr = bias_data_.get();
 
-    // Build final layers_ vector
     layers_.reserve(temp_layers.size());
-    size_t bias_offset = 0;
+    size_t bias_off = 0;
     for (auto &tl : temp_layers) {
-        float *ptr = nullptr;
+        float* ptr = nullptr;
         if (!tl.bias.empty()) {
-            ptr = bias_ptr + bias_offset;
-            std::memcpy(ptr,
-                        tl.bias.data(),
-                        tl.bias.size() * sizeof(float));
-            bias_offset += tl.bias.size();
+            ptr = bias_ptr + bias_off;
+            std::memcpy(ptr, tl.bias.data(), tl.bias.size()*sizeof(float));
+            bias_off += tl.bias.size();
         }
-        layers_.push_back({ tl.type,
-                            std::move(tl.E),
-                            ptr });
+        layers_.push_back({tl.type, std::move(tl.E), ptr});
     }
 
-    // 5) Record output dimension (rows of final layer)
-    if (layers_.empty()) {
-        throw std::runtime_error("ONNX model contains no supported layers");
-    }
-    // Walk backwards until we find a MatMul layer
+    // 6) Determine output_rows_ = m of last MatMul
+    output_rows_ = 0;
     for (auto it = layers_.rbegin(); it != layers_.rend(); ++it) {
         if (it->type == LayerType::MatMul) {
             output_rows_ = it->E.m;
@@ -168,8 +177,16 @@ SparseOnnxModel::SparseOnnxModel(const std::string &onnx_path) {
         }
     }
     if (output_rows_ == 0) {
-        throw std::runtime_error(
-        "Could not determine output dimension: no MatMul layer found");
+        throw std::runtime_error("No MatMul layer found for output dimension");
+    }
+
+    // 7) Allocate one scratch buffer per MatMul layer
+    layer_bufs_.resize(layers_.size());
+    for (size_t i = 0; i < layers_.size(); ++i) {
+        if (layers_[i].type == LayerType::MatMul) {
+            uint32_t m = layers_[i].E.m;
+            layer_bufs_[i].reset(new float[size_t(m) * batch_dim_]);
+        }
     }
 }
 
@@ -178,41 +195,38 @@ void SparseOnnxModel::run(
     uint32_t      C,
     float       *output
 ) const {
-    // 1) Lazy‐allocate or grow our ping-pong buffers to hold max_rows_×C floats
-    size_t need = static_cast<size_t>(max_rows_) * C;
-    if (need > buf_cap_) {
-        buf1_.reset(new float[need]);
-        buf2_.reset(new float[need]);
-        buf_cap_ = need;
+    // Ensure the batch size matches the fixed dimension we inferred
+    if (C != batch_dim_) {
+        throw std::runtime_error(
+            "Batch size mismatch: expected " + std::to_string(batch_dim_) +
+            ", got " + std::to_string(C)
+        );
     }
 
-    // 2) We'll alternate src↔dst between buf1_ and buf2_,
-    //    but first iteration uses the raw `input` pointer.
+    // 'src' always points to the current activation buffer
     const float* src = input;
-    float*       dst = buf1_.get();
 
-    // 3) Track current row‐count, starting from the very first layer’s input dim
-    uint32_t n = layers_.front().E.n;
+    for (size_t i = 0; i < layers_.size(); ++i) {
+        const Layer &L = layers_[i];
 
-    for (const auto &L : layers_) {
         if (L.type == LayerType::MatMul) {
-            // --- Sparse mat-mul step ---
-            uint32_t m = L.E.m;                      // output rows for this layer
+            // MatMul: write into the pre‐allocated buffer for this layer
+            float *dst = layer_bufs_[i].get();
             ellpack_matmul(
-              L.E,
-              src,        // input buffer [n × C]
-              C,
-              L.bias_ptr,
-              dst         // writes [m × C]
+                L.E,            // the ELLPACK handle
+                src,            // input [n × C]
+                C,              // batch size
+                L.bias_ptr,     // length = E.m
+                dst             // writes [m × C]
             );
-
-            // swap buffers for next layer
+            // the next layer reads from here
             src = dst;
-            dst = (dst == buf1_.get() ? buf2_.get() : buf1_.get());
-            n   = m;  // now next layer sees rows=m
 
         } else {
-            // --- Activation step (in-place on src) ---
+            // Activation: apply in-place on 'src' (size = prev_m × C)
+            uint32_t n = (i == 0
+                          ? layers_[0].E.n        // input_dim for first layer
+                          : layers_[i-1].E.m);    // rows of previous MatMul
             size_t len = static_cast<size_t>(n) * C;
             switch (L.type) {
               case LayerType::Relu:
@@ -227,14 +241,14 @@ void SparseOnnxModel::run(
               default:
                 break;
             }
-            // no swap; src still holds the active buffer
+            // 'src' remains the same buffer for the next layer
         }
     }
 
-    // 4) After the final layer, `src` points to (output_rows_ × C) floats
+    // After the last layer, 'src' holds output_rows_ × C floats
     std::memcpy(
-      output,
-      src,
-      static_cast<size_t>(output_rows_) * C * sizeof(float)
+        output,
+        src,
+        static_cast<size_t>(output_rows_) * C * sizeof(float)
     );
 }
