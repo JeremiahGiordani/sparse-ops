@@ -66,6 +66,17 @@ prune.random_unstructured(m.fc2, name="weight", amount=SPARSITY)
 onnx_path = "test_fc.onnx"
 torch.onnx.export(m, dummy, onnx_path, opset_version=14)
 
+# Limit threading
+num_threads = int(os.environ.get("OMP_NUM_THREADS", "1"))
+torch.set_num_threads(num_threads)
+
+os.environ["OMP_NUM_THREADS"]        = str(num_threads)
+os.environ["OPENBLAS_NUM_THREADS"]   = str(num_threads)
+os.environ["MKL_NUM_THREADS"]        = str(num_threads)
+sess_opts = ort.SessionOptions()
+sess_opts.intra_op_num_threads  = num_threads
+sess_opts.inter_op_num_threads  = num_threads
+
 # ────────────────────────────────────────────────────────────────
 #  Set up inference sessions
 # ────────────────────────────────────────────────────────────────
@@ -73,12 +84,9 @@ torch.onnx.export(m, dummy, onnx_path, opset_version=14)
 model = SparseOnnxModel(onnx_path)
 
 # 2) ONNX Runtime session
-session = ort.InferenceSession(onnx_path)
+session = ort.InferenceSession(onnx_path, sess_options=sess_opts)
 input_name = session.get_inputs()[0].name
 
-# Limit threading
-num_threads = int(os.environ.get("OMP_NUM_THREADS", "1"))
-torch.set_num_threads(num_threads)
 
 # ────────────────────────────────────────────────────────────────
 #  Prepare input vectors
