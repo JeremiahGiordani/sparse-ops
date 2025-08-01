@@ -104,7 +104,6 @@ set_target_properties(sparseops_backend PROPERTIES
 # pull in all the include paths
 target_include_directories(sparseops_backend PRIVATE
   ${CMAKE_SOURCE_DIR}/include
-  ${Protobuf_INCLUDE_DIRS}
   ${CMAKE_CURRENT_BINARY_DIR}      # for generated onnx/*.pb.h
   ${PYBIND11_INCLUDE_DIRS}
 )
