@@ -86,6 +86,10 @@ if (LINK_PROTOBUF)
   target_link_libraries(onnx_protos PUBLIC ${Protobuf_LIBRARIES})
 endif()
 
+target_include_directories(onnx_protos PUBLIC
+  ${ONNX_PROTO_ROOT}/generated
+)
+
 # ──────────────────────────────────────────────────────────────
 #  Your Python extension
 # ──────────────────────────────────────────────────────────────
