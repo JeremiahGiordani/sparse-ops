@@ -178,52 +178,63 @@ void SparseOnnxModel::run(
     uint32_t      C,
     float       *output
 ) const {
-    // Determine initial input size (n × C)
-    uint32_t n = layers_.front().E.n;
-    std::vector<float> cur_buf(input, input + size_t(n)*C);
-    std::vector<float> next_buf;  // only used for matmuls
+    // 1) Lazy‐allocate or grow our ping-pong buffers to hold max_rows_×C floats
+    size_t need = static_cast<size_t>(max_rows_) * C;
+    if (need > buf_cap_) {
+        buf1_.reset(new float[need]);
+        buf2_.reset(new float[need]);
+        buf_cap_ = need;
+    }
 
-    // Process each layer in sequence
+    // 2) We'll alternate src↔dst between buf1_ and buf2_,
+    //    but first iteration uses the raw `input` pointer.
+    const float* src = input;
+    float*       dst = buf1_.get();
+
+    // 3) Track current row‐count, starting from the very first layer’s input dim
+    uint32_t n = layers_.front().E.n;
+
     for (const auto &L : layers_) {
         if (L.type == LayerType::MatMul) {
-            // Sparse mat-mul: [n×C] → [m×C]
-            uint32_t m = L.E.m;
-            next_buf.resize(size_t(m) * C);
-
+            // --- Sparse mat-mul step ---
+            uint32_t m = L.E.m;                      // output rows for this layer
             ellpack_matmul(
-                L.E,
-                cur_buf.data(),
-                C,
-                L.bias_ptr,
-                next_buf.data()
+              L.E,
+              src,        // input buffer [n × C]
+              C,
+              L.bias_ptr,
+              dst         // writes [m × C]
             );
 
-            // Move result into cur_buf
-            cur_buf.swap(next_buf);
-            n = m;  // now next layer sees input of size m×C
+            // swap buffers for next layer
+            src = dst;
+            dst = (dst == buf1_.get() ? buf2_.get() : buf1_.get());
+            n   = m;  // now next layer sees rows=m
 
         } else {
-            // Activation: apply directly to cur_buf (size = n×C)
-            size_t len = cur_buf.size();
+            // --- Activation step (in-place on src) ---
+            size_t len = static_cast<size_t>(n) * C;
             switch (L.type) {
               case LayerType::Relu:
-                relu_inplace(cur_buf.data(), len);
+                relu_inplace(const_cast<float*>(src), len);
                 break;
               case LayerType::Sigmoid:
-                sigmoid_inplace(cur_buf.data(), len);
+                sigmoid_inplace(const_cast<float*>(src), len);
                 break;
               case LayerType::Tanh:
-                tanh_inplace(cur_buf.data(), len);
+                tanh_inplace(const_cast<float*>(src), len);
                 break;
               default:
                 break;
             }
-            // no buffer swap, shape stays (n×C)
+            // no swap; src still holds the active buffer
         }
     }
 
-    // Copy the final cur_buf (size = output_rows × C) into user output
-    std::memcpy(output,
-                cur_buf.data(),
-                size_t(output_rows_) * C * sizeof(float));
+    // 4) After the final layer, `src` points to (output_rows_ × C) floats
+    std::memcpy(
+      output,
+      src,
+      static_cast<size_t>(output_rows_) * C * sizeof(float)
+    );
 }

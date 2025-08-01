@@ -50,7 +50,8 @@ private:
 
     std::vector<Layer>           layers_;      ///< Sequence of all layers
     std::unique_ptr<float[]>     bias_data_;   ///< Contiguous storage for all biases
-    std::unique_ptr<float[]>     buf1_, buf2_; ///< Ping-pong workspaces
+    mutable std::unique_ptr<float[]> buf1_, buf2_; ///< Ping-pong workspaces
+    mutable size_t               buf_cap_ = 0;
     uint32_t                     max_rows_;    ///< Max rows (m) across all layers
     uint32_t                     output_rows_; ///< Rows of the final layer
 };
