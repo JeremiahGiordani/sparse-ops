@@ -65,6 +65,7 @@ set(ONNX_PROTO_ROOT ${CMAKE_SOURCE_DIR}/third_party/onnx)
 set(GENERATED_PROTO "${ONNX_PROTO_ROOT}/generated/onnx.pb.cc")
 
 if (EXISTS ${GENERATED_PROTO})
+  message(STATUS "Generated Protobuf found.")
   set(PROTO_SRCS ${ONNX_PROTO_ROOT}/generated/onnx.pb.cc)
   set(PROTO_HDRS ${ONNX_PROTO_ROOT}/generated/onnx.pb.h)
   set(LINK_PROTOBUF FALSE)
