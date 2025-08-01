@@ -44,6 +44,8 @@ SPARSITY        = 0.9
 N_RUNS          = 100
 SEED            = 42
 
+BATCH_DIM       = 50
+
 # ────────────────────────────────────────────────────────────────
 #  Prepare and export ONNX model
 # ────────────────────────────────────────────────────────────────
@@ -54,7 +56,7 @@ m = M(fc_1_in=FC_1_IN,
       fc_2_out=FC_2_OUT).eval()
 
 # dummy input for export
-dummy = torch.randn(1, INPUT_DIM, dtype=torch.float32)
+dummy = torch.randn(BATCH_DIM, INPUT_DIM, dtype=torch.float32)
 
 # apply random unstructured pruning to each weight matrix
 prune.random_unstructured(m.fc1, name="weight", amount=SPARSITY)
@@ -82,29 +84,29 @@ torch.set_num_threads(num_threads)
 #  Prepare input vectors
 # ────────────────────────────────────────────────────────────────
 # 1D host vector
-x = np.random.randn(INPUT_DIM).astype(np.float32)
+x = np.random.randn(BATCH_DIM, INPUT_DIM).astype(np.float32)
 
 # for ONNX Runtime: shape (1, INPUT_DIM)
-x_onnx = x.reshape(1, INPUT_DIM)
+x_onnx = x
 
 # for custom model: shape (INPUT_DIM, 1)
-x_custom = x.reshape(INPUT_DIM, 1)
+x_custom = x.T
 
 # ────────────────────────────────────────────────────────────────
 #  Define runner functions
 # ────────────────────────────────────────────────────────────────
 def torch_run():
-    # input shape (1, INPUT_DIM)
+    # input shape (BATCH_DIM, INPUT_DIM)
     with torch.no_grad():
-        return m(torch.from_numpy(x).unsqueeze(0))
+        return m(torch.from_numpy(x))
 
 def custom_run():
-    # returns shape (FC_2_OUT, 1) → reshape to (1, FC_2_OUT)
+    # returns shape (FC_2_OUT, 1) → reshape to (BATCH_DIM, FC_2_OUT)
     Y = model.run(x_custom)
-    return Y.reshape(1, FC_2_OUT)
+    return Y.reshape(BATCH_DIM, FC_2_OUT)
 
 def onnx_run():
-    return session.run(None, {input_name: x_onnx})[0]  # returns (1, FC_2_OUT)
+    return session.run(None, {input_name: x_onnx})[0]  # returns (BATCH_DIM, FC_2_OUT)
 
 # warm up
 for _ in range(10):
@@ -113,9 +115,9 @@ for _ in range(10):
 # ────────────────────────────────────────────────────────────────
 #  Correctness check
 # ────────────────────────────────────────────────────────────────
-y_ref   = torch_run().numpy()          # shape (1, FC_2_OUT)
-y_sp    = custom_run()                 # shape (1, FC_2_OUT)
-y_onnx  = onnx_run()                   # shape (1, FC_2_OUT)
+y_ref   = torch_run().numpy()          # shape (BATCH_DIM, FC_2_OUT)
+y_sp    = custom_run()                 # shape (BATCH_DIM, FC_2_OUT)
+y_onnx  = onnx_run()                   # shape (BATCH_DIM, FC_2_OUT)
 
 print("=== Verifying correctness ===")
 print("Torch vs ONNX Runtime:  ", np.allclose(y_ref,   y_onnx,  atol=1e-4))
@@ -127,6 +129,7 @@ print("Torch vs SparseModel:   ", np.allclose(y_ref,   y_sp,    atol=1e-4))
 # ────────────────────────────────────────────────────────────────
 print("\n=== Benchmarking over", N_RUNS, "runs ===")
 print(f"Dimensions: FC1 {FC_1_IN}→{FC_1_OUT}, FC2 {FC_2_IN}→{FC_2_OUT}, Sparsity {SPARSITY:.1%}")
+print(f"Batch Dim: {BATCH_DIM}")
 print(f"[PyTorch]       {average_runtime(torch_run,   N_RUNS)*1000:.3f} ms")
 print(f"[Sparse Model]  {average_runtime(custom_run,  N_RUNS)*1000:.3f} ms")
 print(f"[ONNX Runtime]  {average_runtime(onnx_run,    N_RUNS)*1000:.3f} ms")
