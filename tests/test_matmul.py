@@ -18,9 +18,9 @@ from python.cpp_backend import (
 # Experiment parameters
 # ----------------------------------------------------------------------
 # Resnet toy example dimensions:
-# INPUT_DIM  = 147
-# OUTPUT_DIM = 64
-# C = 12544
+INPUT_DIM  = 147
+OUTPUT_DIM = 64
+C = 12544
 
 # Benchmark dimensions:
 INPUT_DIM  = 2000
