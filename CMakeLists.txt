@@ -57,37 +57,34 @@ else()
   )
 endif()
 
+# ──────────────────────────────────────────────────────────────
+#  Protobuf (for ONNX protos)
+# ──────────────────────────────────────────────────────────────
+find_package(Protobuf REQUIRED)
 
 # ──────────────────────────────────────────────────────────────
-#  ONNX protos (vendored under third_party/onnx)
+#  ONNX protos (no sudo, vendored under third_party/onnx)
 # ──────────────────────────────────────────────────────────────
 set(ONNX_PROTO_ROOT ${CMAKE_SOURCE_DIR}/third_party/onnx)
-set(GENERATED_PROTO "${ONNX_PROTO_ROOT}/generated/onnx/onnx.pb.cc")
+file(GLOB ONNX_PROTOS
+  ${ONNX_PROTO_ROOT}/onnx/onnx.proto
+  ${ONNX_PROTO_ROOT}/onnx/onnx-ml.proto
+)
 
-if (EXISTS ${GENERATED_PROTO})
-  message(STATUS "Generated Protobuf found.")
-  set(PROTO_SRCS ${ONNX_PROTO_ROOT}/generated/onnx/onnx.pb.cc)
-  set(PROTO_HDRS ${ONNX_PROTO_ROOT}/generated/onnx/onnx.pb.h)
-  set(LINK_PROTOBUF FALSE)
-else()
-  message(STATUS "Generated Protobuf files not found. Falling back to build-time generation.")
-  find_package(Protobuf REQUIRED)
-  file(GLOB ONNX_PROTOS
-    ${ONNX_PROTO_ROOT}/onnx/onnx.proto
-    # ${ONNX_PROTO_ROOT}/onnx/onnx-ml.proto  # remove this if not used!
-  )
-  protobuf_generate_cpp(PROTO_SRCS PROTO_HDRS ${ONNX_PROTOS})
-  set(LINK_PROTOBUF TRUE)
-endif()
+# This macro comes from FindProtobuf.cmake
+protobuf_generate_cpp(
+  PROTO_SRCS  PROTO_HDRS
+  ${ONNX_PROTOS}
+)
 
-add_library(onnx_protos STATIC ${PROTO_SRCS} ${PROTO_HDRS})
-
-if (LINK_PROTOBUF)
-  target_link_libraries(onnx_protos PUBLIC ${Protobuf_LIBRARIES})
-endif()
-
+# bundle generated code into a tiny static lib
+add_library(onnx_protos STATIC
+  ${PROTO_SRCS}
+  ${PROTO_HDRS}        # so IDEs know about the headers
+)
+target_link_libraries(onnx_protos PUBLIC ${Protobuf_LIBRARIES})
 target_include_directories(onnx_protos PUBLIC
-  ${ONNX_PROTO_ROOT}/generated
+  ${CMAKE_CURRENT_BINARY_DIR}  # where onnx/*.pb.h now lives
 )
 
 # ──────────────────────────────────────────────────────────────
@@ -109,6 +106,7 @@ set_target_properties(sparseops_backend PROPERTIES
 # pull in all the include paths
 target_include_directories(sparseops_backend PRIVATE
   ${CMAKE_SOURCE_DIR}/include
+  ${Protobuf_INCLUDE_DIRS}
   ${CMAKE_CURRENT_BINARY_DIR}      # for generated onnx/*.pb.h
   ${PYBIND11_INCLUDE_DIRS}
 )
@@ -116,6 +114,7 @@ target_include_directories(sparseops_backend PRIVATE
 # link against Python, Protobuf, OpenMP and our onnx_protos
 target_link_libraries(sparseops_backend PRIVATE
   Python3::Python
+  ${Protobuf_LIBRARIES}
   $<$<BOOL:${OpenMP_FOUND}>:OpenMP::OpenMP_CXX>
   onnx_protos
 )
