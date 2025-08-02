@@ -170,7 +170,7 @@ SparseOnnxModel::SparseOnnxModel(const std::string &onnx_path) {
         }
         layers_.push_back({tl.type, std::move(tl.E), ptr});
     }
-    
+
     last_matmul_idx_ = 0;
     for (size_t i = 0; i < layers_.size(); ++i) {
         if (layers_[i].type == LayerType::MatMul) {
@@ -244,6 +244,15 @@ void SparseOnnxModel::run(
             } else {
                 size_t off = offsets_[i];
                 dst = arena_buf_.get() + off;
+            }
+
+            // --- DEBUG: check that 'dst' is 64-byte aligned and row-major strided ---
+            {
+                uintptr_t p0 = reinterpret_cast<uintptr_t>(dst);
+                uintptr_t p1 = reinterpret_cast<uintptr_t>(dst + C);  // start of row 1
+                std::cerr << "[DBG] layer=" << i
+                        << " dst%64=" << (p0 % 64)
+                        << " nextrow%64=" << (p1 % 64) << "\n";
             }
 
             ellpack_matmul(
