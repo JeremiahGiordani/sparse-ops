@@ -190,31 +190,36 @@ SparseOnnxModel::SparseOnnxModel(const std::string &onnx_path) {
         throw std::runtime_error("No MatMul layer found for output dimension");
     }
 
-    // 7) Allocate one scratch buffer per MatMul layer
-    resize_buffers(batch_dim_);
+    // 7) allocate one scratch buffer per MatMul layer
+    layer_bufs_.resize(layers_.size());
+    for (size_t i = 0; i < layers_.size(); ++i) {
+        if (layers_[i].type == LayerType::MatMul) {
+            uint32_t m = layers_[i].E.m;
+            size_t   need = size_t(m) * batch_dim_;
+
+            // ensure 64-byte alignment
+            void *raw = nullptr;
+            if (posix_memalign(&raw, 64, need * sizeof(float)) != 0) {
+                throw std::bad_alloc();
+            }
+            layer_bufs_[i].reset(reinterpret_cast<float*>(raw));
+        }
+    }
 }
 
 void SparseOnnxModel::resize_buffers(uint32_t new_C) const {
-    // Update batch size
     batch_dim_ = new_C;
-
-    // Compute per-layer offsets into one big scratch array
-    offsets_.clear();
-    offsets_.reserve(layers_.size());
-    size_t total_floats = 0;
-
-    for (const auto &L : layers_) {
-        if (L.type == LayerType::MatMul) {
-            offsets_.push_back(total_floats);
-            total_floats += size_t(L.E.m) * batch_dim_;
-        } else {
-            // activations don’t get their own scratch buffer
-            offsets_.push_back(SIZE_MAX);
+    for (size_t i = 0; i < layers_.size(); ++i) {
+        if (layers_[i].type == LayerType::MatMul) {
+            uint32_t m = layers_[i].E.m;
+            size_t   need = size_t(m) * batch_dim_;
+            void *raw = nullptr;
+            if (posix_memalign(&raw, 64, need * sizeof(float)) != 0) {
+                throw std::bad_alloc();
+            }
+            layer_bufs_[i].reset(reinterpret_cast<float*>(raw));
         }
     }
-
-    // (Re)allocate the arena
-    arena_buf_.reset(new float[total_floats]);
 }
 
 
@@ -238,22 +243,18 @@ void SparseOnnxModel::run(
         if (L.type == LayerType::MatMul) {
             // MatMul: write into the pre‐allocated buffer for this layer
             bool is_last = (i == last_matmul_idx_);
-            float *dst;
-            if (is_last) {
-                dst = output;           // write directly into user's buffer
-            } else {
-                size_t off = offsets_[i];
-                dst = arena_buf_.get() + off;
-            }
+            float *dst   = is_last
+                          ? output
+                          : layer_bufs_[i].get();
 
             // --- DEBUG: check that 'dst' is 64-byte aligned and row-major strided ---
-            {
-                uintptr_t p0 = reinterpret_cast<uintptr_t>(dst);
-                uintptr_t p1 = reinterpret_cast<uintptr_t>(dst + C);  // start of row 1
-                std::cerr << "[DBG] layer=" << i
-                        << " dst%64=" << (p0 % 64)
-                        << " nextrow%64=" << (p1 % 64) << "\n";
-            }
+            // {
+            //     uintptr_t p0 = reinterpret_cast<uintptr_t>(dst);
+            //     uintptr_t p1 = reinterpret_cast<uintptr_t>(dst + C);  // start of row 1
+            //     std::cerr << "[DBG] layer=" << i
+            //             << " dst%64=" << (p0 % 64)
+            //             << " nextrow%64=" << (p1 % 64) << "\n";
+            // }
 
             ellpack_matmul(
                 L.E,            // the ELLPACK handle

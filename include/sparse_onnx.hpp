@@ -61,8 +61,7 @@ private:
 
     std::vector<Layer>                            layers_;      ///< Execution sequence
     std::unique_ptr<float[]>                      bias_data_;   ///< All biases packed contiguously
-    mutable std::unique_ptr<float[]>              arena_buf_;   ///< One big scratch arena for all MatMul layers
-    mutable std::vector<size_t>                   offsets_;     ///< float-offsets into arena_buf_, one per layer index
+    mutable std::vector<std::unique_ptr<float[]>> layer_bufs_;
     mutable uint32_t                              batch_dim_;   ///< Current batch size
 
     uint32_t                                      max_rows_;    ///< Max rows (m) across all MatMul layers
