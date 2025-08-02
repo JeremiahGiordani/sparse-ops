@@ -149,24 +149,58 @@ PYBIND11_MODULE(sparseops_backend, m)
     py::class_<SparseOnnxModel>(m, "SparseOnnxModel")
         .def(py::init<const std::string&>(),
              "Load an ONNX model and pre-encode weights to ELLPACK")
+        // .def("run",
+        //     [](const SparseOnnxModel &model,
+        //        py::array_t<float, py::array::c_style | py::array::forcecast> X) {
+        //         auto buf = X.request();
+        //         if (buf.ndim != 2) {
+        //             throw std::runtime_error("Input must be a 2D array");
+        //         }
+        //         uint32_t n = static_cast<uint32_t>(buf.shape[0]);
+        //         uint32_t C = static_cast<uint32_t>(buf.shape[1]);
+        //         const float* input_ptr = static_cast<const float*>(buf.ptr);
+
+        //         uint32_t M = model.output_rows();
+        //         std::array<ssize_t,2> out_shape = { (ssize_t)M, (ssize_t)C };
+        //         py::array_t<float> Y(out_shape);
+        //         auto bufY = Y.request();
+        //         model.run(input_ptr,
+        //                   C,
+        //                   static_cast<float*>(bufY.ptr));
+        //         return Y;
+        //     },
+        //     "Run inference on input X (shape n×C), returns output (m×C)")
         .def("run",
             [](const SparseOnnxModel &model,
-               py::array_t<float, py::array::c_style | py::array::forcecast> X) {
-                auto buf = X.request();
-                if (buf.ndim != 2) {
-                    throw std::runtime_error("Input must be a 2D array");
+            py::array_t<float, py::array::c_style | py::array::forcecast> X) {
+                // 1) Grab input array
+                auto bufX = X.request();
+                if (bufX.ndim != 2) {
+                    throw std::runtime_error("Input must be 2D (n × C)");
                 }
-                uint32_t n = static_cast<uint32_t>(buf.shape[0]);
-                uint32_t C = static_cast<uint32_t>(buf.shape[1]);
-                const float* input_ptr = static_cast<const float*>(buf.ptr);
+                uint32_t n = static_cast<uint32_t>(bufX.shape[0]);
+                uint32_t C = static_cast<uint32_t>(bufX.shape[1]);
+                const float* input_ptr = static_cast<const float*>(bufX.ptr);
 
-                uint32_t M = model.output_rows();
-                std::array<ssize_t,2> out_shape = { (ssize_t)M, (ssize_t)C };
-                py::array_t<float> Y(out_shape);
+                // 2) Allocate output Y (m × C)
+                uint32_t m = model.output_rows();
+                std::array<ssize_t,2> shapeY = { (ssize_t)m, (ssize_t)C };
+                py::array_t<float> Y(shapeY);
                 auto bufY = Y.request();
-                model.run(input_ptr,
-                          C,
-                          static_cast<float*>(bufY.ptr));
+                float* out_ptr = static_cast<float*>(bufY.ptr);
+
+                // 3) Fetch the first-layer ELLPACK
+                const Ellpack &E0 = model.debug_get_ellpack_at(0);
+
+                // 4) Call the raw sparse kernel with no bias
+                ellpack_matmul(
+                    E0,
+                    input_ptr,
+                    C,
+                    /* bias = */ nullptr,
+                    out_ptr
+                );
+
                 return Y;
             },
             "Run inference on input X (shape n×C), returns output (m×C)")

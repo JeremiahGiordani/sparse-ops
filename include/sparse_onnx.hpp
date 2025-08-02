@@ -46,6 +46,10 @@ public:
     /// Number of rows (m) in the final output (i.e., output_dim).
     uint32_t output_rows() const { return output_rows_; }
 
+    const Ellpack& debug_get_ellpack_at(size_t i) const {
+        return layers_.at(i).E;
+    }
+
 private:
     struct Layer {
         LayerType       type;      ///< MatMul or activation
