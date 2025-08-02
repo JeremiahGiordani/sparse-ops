@@ -230,14 +230,46 @@ void SparseOnnxModel::run(
 
         if (L.type == LayerType::MatMul) {
             // MatMul: write into the pre‐allocated buffer for this layer
-            size_t off = offsets_[i];
-            float *dst = arena_buf_.get() + off;
+            // size_t off = offsets_[i];
+            // float *dst = arena_buf_.get() + off;
+            // ellpack_matmul(
+            //     L.E,            // the ELLPACK handle
+            //     src,            // input [n × C]
+            //     C,              // batch size
+            //     L.bias_ptr,     // length = E.m
+            //     dst             // writes [m × C]
+            // );
+
+            // **DEBUG**: build a fresh Ellpack of the same shape
+            uint32_t m = L.E.m, n = L.E.n, r = L.E.r;
+            Ellpack E_dummy(m, n, r);
+            // fill weights with a constant (e.g. 1.0f)
+            float *W = E_dummy.Wd.ptr;
+            for (size_t k = 0; k < size_t(m)*r; ++k) {
+                W[k] = 1.0f;
+            }
+            // fill idx with a simple wrap-around (ensures gathers still happen)
+            auto &idx = E_dummy.idx;
+            for (size_t k = 0; k < size_t(m)*r; ++k) {
+                idx[k] = static_cast<uint32_t>(k % n);
+            }
+            // set nnz[row] = r for every row
+            auto &nnz = E_dummy.nnz;
+            for (uint32_t row = 0; row < m; ++row) {
+                nnz[row] = r;
+            }
+
+            // Allocate a throw-away output buffer
+            float *dst = (float*)aligned_alloc(64, size_t(m)*C*sizeof(float));
+            if (!dst) throw std::bad_alloc();
+
+            // Run the same kernel, but on our dummy E
             ellpack_matmul(
-                L.E,            // the ELLPACK handle
-                src,            // input [n × C]
-                C,              // batch size
-                L.bias_ptr,     // length = E.m
-                dst             // writes [m × C]
+                E_dummy,
+                src,
+                C,
+                L.bias_ptr,  // keep real bias to isolate E impact
+                dst
             );
             // the next layer reads from here
             src = dst;
