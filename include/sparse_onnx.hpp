@@ -53,10 +53,12 @@ private:
         float*          bias_ptr;  ///< Pointer into bias_data_ (length = E.m)
     };
 
-    std::vector<Layer>                          layers_;      ///< Execution sequence
-    std::unique_ptr<float[]>                    bias_data_;   ///< All biases packed contiguously
-    std::vector<std::unique_ptr<float[]>>       layer_bufs_;  ///< One [m × batch_dim] buffer per MatMul
-    uint32_t                                     batch_dim_;   ///< Fixed batch size (from ONNX input)
-    uint32_t                                     max_rows_;    ///< Max rows (m) across all MatMul layers
-    uint32_t                                     output_rows_; ///< Rows of the final (last MatMul) layer
+    void resize_buffers(uint32_t new_C) const;
+
+    std::vector<Layer>                            layers_;      ///< Execution sequence
+    std::unique_ptr<float[]>                      bias_data_;   ///< All biases packed contiguously
+    mutable std::vector<std::unique_ptr<float[]>> layer_bufs_;  ///< One [m × batch_dim] buffer per MatMul
+    mutable uint32_t                              batch_dim_;    ///< Batch size (from ONNX input, or resized)
+    uint32_t                                      max_rows_;    ///< Max rows (m) across all MatMul layers
+    uint32_t                                      output_rows_; ///< Rows of the final (last MatMul) layer
 };

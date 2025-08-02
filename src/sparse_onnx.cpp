@@ -190,6 +190,18 @@ SparseOnnxModel::SparseOnnxModel(const std::string &onnx_path) {
     }
 }
 
+void SparseOnnxModel::resize_buffers(uint32_t new_C) const {
+    // Reallocate each MatMul buffer to m × new_C
+    for (size_t i = 0; i < layers_.size(); ++i) {
+        if (layers_[i].type == LayerType::MatMul) {
+            uint32_t m = layers_[i].E.m;
+            layer_bufs_[i].reset(new float[size_t(m) * new_C]);
+        }
+    }
+    batch_dim_ = new_C;
+}
+
+
 void SparseOnnxModel::run(
     const float *input,
     uint32_t      C,
@@ -197,10 +209,7 @@ void SparseOnnxModel::run(
 ) const {
     // Ensure the batch size matches the fixed dimension we inferred
     if (C != batch_dim_) {
-        throw std::runtime_error(
-            "Batch size mismatch: expected " + std::to_string(batch_dim_) +
-            ", got " + std::to_string(C)
-        );
+        resize_buffers(C);
     }
 
     // 'src' always points to the current activation buffer
