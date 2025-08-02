@@ -230,8 +230,15 @@ void SparseOnnxModel::run(
 
         if (L.type == LayerType::MatMul) {
             // MatMul: write into the pre‐allocated buffer for this layer
-            size_t off = offsets_[i];
-            float *dst = arena_buf_.get() + off;
+            bool is_last = (L.E.m == output_rows_);
+            float *dst;
+            if (is_last) {
+                dst = output;           // write directly into user's buffer
+            } else {
+                size_t off = offsets_[i];
+                dst = arena_buf_.get() + off;
+            }
+
             ellpack_matmul(
                 L.E,            // the ELLPACK handle
                 src,            // input [n × C]
@@ -265,11 +272,4 @@ void SparseOnnxModel::run(
             // 'src' remains the same buffer for the next layer
         }
     }
-
-    // After the last layer, 'src' holds output_rows_ × C floats
-    std::memcpy(
-        output,
-        src,
-        static_cast<size_t>(output_rows_) * C * sizeof(float)
-    );
 }
