@@ -208,6 +208,10 @@ void SparseOnnxModel::resize_buffers(uint32_t new_C) const {
 
     // (Re)allocate the arena
     arena_buf_.reset(new float[total_floats]);
+    #pragma omp parallel for schedule(static)
+    for (size_t i = 0; i < total_floats; ++i) {
+    arena_buf_.get()[i] = 0.0f;
+    }
 }
 
 
