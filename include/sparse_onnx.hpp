@@ -46,8 +46,11 @@ public:
     /// Number of rows (m) in the final output (i.e., output_dim).
     uint32_t output_rows() const { return output_rows_; }
 
-    const Ellpack& debug_get_ellpack_at(size_t i) const {
+    const Ellpack& get_ellpack_at(size_t i) const {
         return layers_.at(i).E;
+    }
+    const float* get_bias_at(size_t i) const {
+        return layers_.at(i).bias_ptr;
     }
 
 private:

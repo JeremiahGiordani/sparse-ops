@@ -165,14 +165,15 @@ PYBIND11_MODULE(sparseops_backend, m)
             float* out_ptr = static_cast<float*>(bufY.ptr);
 
             // 3) Fetch the first-layer ELLPACK
-            const Ellpack &E0 = model.debug_get_ellpack_at(0);
+            const Ellpack &E0 = model.get_ellpack_at(0);
+            const float  *bias0   = model.get_bias_at(0);
 
             // 4) Call the raw sparse kernel with no bias
             ellpack_matmul(
                 E0,
                 input_ptr,
                 C,
-                /* bias = */ nullptr,
+                bias0,
                 out_ptr
             );
 
