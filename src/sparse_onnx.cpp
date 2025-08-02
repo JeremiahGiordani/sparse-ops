@@ -244,7 +244,7 @@ void SparseOnnxModel::run(
             // MatMul: write into the pre‐allocated buffer for this layer
             bool   is_last = (i == last_matmul_idx_);
             float* dst;
-            if (is_last) {
+            if (is_last && false) {
                 // final layer → write directly into the user’s buffer
                 dst = output;
             } else {
@@ -303,4 +303,9 @@ void SparseOnnxModel::run(
             // 'src' remains the same buffer for the next layer
         }
     }
+    std::memcpy(
+        output,
+        src,
+        static_cast<size_t>(output_rows_) * C * sizeof(float)
+    );
 }
