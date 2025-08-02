@@ -170,6 +170,13 @@ SparseOnnxModel::SparseOnnxModel(const std::string &onnx_path) {
         }
         layers_.push_back({tl.type, std::move(tl.E), ptr});
     }
+    
+    last_matmul_idx_ = 0;
+    for (size_t i = 0; i < layers_.size(); ++i) {
+        if (layers_[i].type == LayerType::MatMul) {
+            last_matmul_idx_ = i;
+        }
+    }
 
     // 6) Determine output_rows_ = m of last MatMul
     output_rows_ = 0;
@@ -230,7 +237,7 @@ void SparseOnnxModel::run(
 
         if (L.type == LayerType::MatMul) {
             // MatMul: write into the pre‐allocated buffer for this layer
-            bool is_last = (L.E.m == output_rows_);
+            bool is_last = (i == last_matmul_idx_);
             float *dst;
             if (is_last) {
                 dst = output;           // write directly into user's buffer
