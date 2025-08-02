@@ -226,6 +226,10 @@ void SparseOnnxModel::run(
     const float* src = input;
 
     for (size_t i = 0; i < layers_.size(); ++i) {
+        if (i == 0) {
+            std::uintptr_t p = reinterpret_cast<std::uintptr_t>(src);
+            std::cerr << "first-layer src mod 64 = " << (p % 64) << "\n";
+        }
         const Layer &L = layers_[i];
 
         if (L.type == LayerType::MatMul) {
