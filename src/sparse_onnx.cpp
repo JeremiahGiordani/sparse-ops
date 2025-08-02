@@ -233,18 +233,28 @@ void SparseOnnxModel::run(
         const Layer &L = layers_[i];
 
         if (L.type == LayerType::MatMul) {
-            // MatMul: write into the pre‐allocated buffer for this layer
-            size_t off = offsets_[i];
-            float *dst = arena_buf_.get() + off;
+            uint32_t m = L.E.m;
+            size_t   count = size_t(m) * C;
+
+            // --- allocate a fresh, 64-byte aligned buffer ---
+            void* raw = nullptr;
+            if (posix_memalign(&raw, 64, count * sizeof(float)) != 0) {
+                throw std::bad_alloc();
+            }
+            float* tmp_dst = reinterpret_cast<float*>(raw);
+
             ellpack_matmul(
                 L.E,            // the ELLPACK handle
                 src,            // input [n × C]
                 C,              // batch size
                 L.bias_ptr,     // length = E.m
-                dst             // writes [m × C]
+                tmp_dst             // writes [m × C]
             );
+            if (src != input) {
+                free(const_cast<float*>(src));
+            }
             // the next layer reads from here
-            src = dst;
+            src = tmp_dst;
 
         } else {
             // Activation: apply in-place on 'src' (size = prev_m × C)
