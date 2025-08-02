@@ -11,6 +11,7 @@
 #include <cstring>
 #include <cstddef>
 #include <limits>
+#include <omp.h>
 
 #include "ellpack_encoder.hpp"      // convert_to_ellpack, Ellpack
 #include "ellpack_matmul.hpp"       // ellpack_matmul
@@ -219,6 +220,7 @@ void SparseOnnxModel::run(
     if (C != batch_dim_) {
         resize_buffers(C);
     }
+    omp_set_schedule(omp_sched_static, 1);
 
     // 'src' always points to the current activation buffer
     const float* src = input;
