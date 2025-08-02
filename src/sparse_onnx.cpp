@@ -242,10 +242,21 @@ void SparseOnnxModel::run(
 
         if (L.type == LayerType::MatMul) {
             // MatMul: write into the pre‐allocated buffer for this layer
-            bool is_last = (i == last_matmul_idx_);
-            float *dst   = is_last
-                          ? output
-                          : layer_bufs_[i].get();
+            bool   is_last = (i == last_matmul_idx_);
+            float* dst;
+            if (is_last) {
+                // final layer → write directly into the user’s buffer
+                dst = output;
+            } else {
+                // allocate a fresh, 64-byte aligned scratch for this layer
+                uint32_t m    = L.E.m;
+                size_t   need = size_t(m) * C;
+                void    *raw  = nullptr;
+                if (posix_memalign(&raw, 64, need * sizeof(float)) != 0) {
+                    throw std::bad_alloc();
+                }
+                dst = reinterpret_cast<float*>(raw);
+            }
 
             // --- DEBUG: check that 'dst' is 64-byte aligned and row-major strided ---
             // {
@@ -263,6 +274,9 @@ void SparseOnnxModel::run(
                 L.bias_ptr,     // length = E.m
                 dst             // writes [m × C]
             );
+            if (src != input) {
+                free(const_cast<float*>(src));
+            }
 
             // the next layer reads from here
             src = dst;
