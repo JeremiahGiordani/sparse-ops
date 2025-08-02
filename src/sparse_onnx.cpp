@@ -223,13 +223,17 @@ void SparseOnnxModel::run(
     omp_set_schedule(omp_sched_static, 1);
 
     // 'src' always points to the current activation buffer
-    const float* src = input;
+    // const float* src = input;
+
+    uint32_t n = layers_.front().E.n;
+    size_t   count = size_t(n) * C;
+    float* aligned_input = nullptr;
+    if (posix_memalign((void**)&aligned_input, 64, count*sizeof(float)) != 0)
+    throw std::bad_alloc();
+    std::memcpy(aligned_input, input, count*sizeof(float));
+    const float* src = aligned_input;
 
     for (size_t i = 0; i < layers_.size(); ++i) {
-        if (i == 0) {
-            std::uintptr_t p = reinterpret_cast<std::uintptr_t>(src);
-            std::cerr << "first-layer src mod 64 = " << (p % 64) << "\n";
-        }
         const Layer &L = layers_[i];
 
         if (L.type == LayerType::MatMul) {
@@ -268,6 +272,7 @@ void SparseOnnxModel::run(
             // 'src' remains the same buffer for the next layer
         }
     }
+    free(aligned_input);
 
     // After the last layer, 'src' holds output_rows_ × C floats
     std::memcpy(
