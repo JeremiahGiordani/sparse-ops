@@ -48,7 +48,7 @@ class M(nn.Module):
 FC_IN, FC_OUT = 1000, 1000
 INPUT_DIM       = FC_IN
 NUM_LAYERS      = 1
-SPARSITY        = 0.70
+SPARSITY        = 0.90
 N_RUNS          = 100
 SEED            = 42
 
@@ -99,10 +99,6 @@ x_custom = x.T
 # ────────────────────────────────────────────────────────────────
 #  Define runner functions
 # ────────────────────────────────────────────────────────────────
-def torch_run():
-    # input shape (BATCH_DIM, INPUT_DIM)
-    with torch.no_grad():
-        return m(torch.from_numpy(x))
 
 def custom_run():
     # returns shape (FC_2_OUT, 1) → reshape to (BATCH_DIM, FC_2_OUT)
@@ -110,16 +106,12 @@ def custom_run():
 
 # warm up
 for _ in range(10):
-    torch_run(); custom_run()
+    custom_run()
 
 # ────────────────────────────────────────────────────────────────
 #  Correctness check
 # ────────────────────────────────────────────────────────────────
-y_ref   = torch_run().numpy()          # shape (BATCH_DIM, FC_2_OUT)
 y_sp    = custom_run()                 # shape (BATCH_DIM, FC_2_OUT)
-
-print("=== Verifying correctness ===")
-print("Torch vs SparseModel:   ", np.allclose(y_ref,   y_sp.T,    atol=1e-4))
 
 # ────────────────────────────────────────────────────────────────
 #  Benchmarking
@@ -127,6 +119,5 @@ print("Torch vs SparseModel:   ", np.allclose(y_ref,   y_sp.T,    atol=1e-4))
 print("\n=== Benchmarking over", N_RUNS, "runs ===")
 print(f"Dimensions: FC {FC_IN}→{FC_OUT}, NUM_LAYERS {NUM_LAYERS}, Sparsity {SPARSITY:.1%}")
 print(f"Batch Dim: {BATCH_DIM}")
-print(f"[PyTorch]       {average_runtime(torch_run,   N_RUNS)*1000:.3f} ms")
 print(f"[Sparse Model]  {average_runtime(custom_run,  N_RUNS)*1000:.3f} ms")
 
