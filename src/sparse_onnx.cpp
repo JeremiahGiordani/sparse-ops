@@ -236,7 +236,7 @@ void SparseOnnxModel::run(
                 L.E,            // the ELLPACK handle
                 src,            // input [n × C]
                 C,              // batch size
-                L.bias_ptr,     // length = E.m
+                nullptr,     // length = E.m
                 dst             // writes [m × C]
             );
             // the next layer reads from here
