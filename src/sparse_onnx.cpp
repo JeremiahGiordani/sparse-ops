@@ -9,6 +9,8 @@
 #include <vector>
 #include <algorithm>
 #include <cstring>
+#include <cstddef>
+#include <limits> 
 
 #include "ellpack_encoder.hpp"      // convert_to_ellpack, Ellpack
 #include "ellpack_matmul.hpp"       // ellpack_matmul
@@ -181,24 +183,30 @@ SparseOnnxModel::SparseOnnxModel(const std::string &onnx_path) {
     }
 
     // 7) Allocate one scratch buffer per MatMul layer
-    layer_bufs_.resize(layers_.size());
-    for (size_t i = 0; i < layers_.size(); ++i) {
-        if (layers_[i].type == LayerType::MatMul) {
-            uint32_t m = layers_[i].E.m;
-            layer_bufs_[i].reset(new float[size_t(m) * batch_dim_]);
-        }
-    }
+    resize_buffers(batch_dim_);
 }
 
 void SparseOnnxModel::resize_buffers(uint32_t new_C) const {
-    // Reallocate each MatMul buffer to m × new_C
-    for (size_t i = 0; i < layers_.size(); ++i) {
-        if (layers_[i].type == LayerType::MatMul) {
-            uint32_t m = layers_[i].E.m;
-            layer_bufs_[i].reset(new float[size_t(m) * new_C]);
+    // Update batch size
+    batch_dim_ = new_C;
+
+    // Compute per-layer offsets into one big scratch array
+    offsets_.clear();
+    offsets_.reserve(layers_.size());
+    size_t total_floats = 0;
+
+    for (const auto &L : layers_) {
+        if (L.type == LayerType::MatMul) {
+            offsets_.push_back(total_floats);
+            total_floats += size_t(L.E.m) * batch_dim_;
+        } else {
+            // activations don’t get their own scratch buffer
+            offsets_.push_back(SIZE_MAX);
         }
     }
-    batch_dim_ = new_C;
+
+    // (Re)allocate the arena
+    arena_buf_.reset(new float[total_floats]);
 }
 
 
@@ -220,7 +228,8 @@ void SparseOnnxModel::run(
 
         if (L.type == LayerType::MatMul) {
             // MatMul: write into the pre‐allocated buffer for this layer
-            float *dst = layer_bufs_[i].get();
+            size_t off = offsets_[i];
+            float *dst = arena_buf_.get() + off;
             ellpack_matmul(
                 L.E,            // the ELLPACK handle
                 src,            // input [n × C]
