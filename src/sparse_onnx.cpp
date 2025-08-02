@@ -230,8 +230,6 @@ void SparseOnnxModel::run(
             // MatMul: write into the pre‐allocated buffer for this layer
             size_t off = offsets_[i];
             float *dst = arena_buf_.get() + off;
-            std::uintptr_t p = reinterpret_cast<std::uintptr_t>(dst);
-            std::cerr << "dst mod 64 = " << (p % 64) << "\n";
             ellpack_matmul(
                 L.E,            // the ELLPACK handle
                 src,            // input [n × C]
