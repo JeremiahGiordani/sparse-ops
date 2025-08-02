@@ -5,7 +5,6 @@
 #include <cstdlib>
 #include <algorithm>  // std::fill, std::max
 #include <cstdint>  // uint32_t, uint64_t
-#include <iostream>
 
 static inline bool supports_avx512() {
 #if defined(__GNUC__)
@@ -28,10 +27,6 @@ void ellpack_matmul(
     int nth       = env ? std::atoi(env) : omp_get_max_threads();
     const bool use_avx512 = supports_avx512();
     const uint32_t simd_width = use_avx512 ? 16u : 8u;
-
-    std::cerr << "Running matmul with " 
-          << nth
-          << " threads\n";
 
     #pragma omp parallel for num_threads(nth) schedule(static)
     for (uint32_t i = 0; i < m; ++i) {
