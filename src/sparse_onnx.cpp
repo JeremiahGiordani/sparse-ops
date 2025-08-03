@@ -243,7 +243,7 @@ void SparseOnnxModel::run(
             // MatMul: write into the pre‐allocated buffer for this layer
             bool   is_last = (i == last_matmul_idx_);
             float* dst;
-            if (is_last && false) {
+            if (is_last) {
                 // final layer → write directly into the output buffer
                 dst = output;
             } else {
