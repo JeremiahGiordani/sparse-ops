@@ -147,7 +147,8 @@ PYBIND11_MODULE(sparseops_backend, m)
 
     m.def("run",
         [](const SparseOnnxModel &model,
-        py::array_t<float, py::array::c_style | py::array::forcecast> X) {
+        py::array_t<float, py::array::c_style | py::array::forcecast> X,
+        size_t layer_idx) {
             // 1) Grab input array
             auto bufX = X.request();
             if (bufX.ndim != 2) {
@@ -165,15 +166,15 @@ PYBIND11_MODULE(sparseops_backend, m)
             float* out_ptr = static_cast<float*>(bufY.ptr);
 
             // 3) Fetch the first-layer ELLPACK
-            const Ellpack &E0 = model.get_ellpack_at(0);
-            const float  *bias0   = model.get_bias_at(0);
+            const Ellpack &E = model.get_ellpack_at(layer_idx);
+            const float  *bias   = model.get_bias_at(layer_idx);
 
             // 4) Call the raw sparse kernel with no bias
             ellpack_matmul(
-                E0,
+                E,
                 input_ptr,
                 C,
-                bias0,
+                bias,
                 out_ptr
             );
 
