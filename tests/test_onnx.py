@@ -110,7 +110,7 @@ x = np.random.randn(BATCH_DIM, INPUT_DIM).astype(np.float32)
 x_onnx = x
 
 # for custom model: shape (INPUT_DIM, 1)
-x_custom = x.T
+x_custom = np.ascontiguousarray(x.T)
 
 # ────────────────────────────────────────────────────────────────
 #  Define runner functions
@@ -149,6 +149,6 @@ print("\n=== Benchmarking over", N_RUNS, "runs ===")
 print(f"Dimensions: FC {FC_IN}→{FC_OUT}, NUM_LAYERS {NUM_LAYERS}, Sparsity {SPARSITY:.1%}")
 print(f"Batch Dim: {BATCH_DIM}")
 print(f"[PyTorch]       {average_runtime(torch_run,   N_RUNS)*1000:.3f} ms")
-print(f"[Sparse Model]  {average_runtime(custom_run,  N_RUNS)*1000:.3f} ms")
 print(f"[ONNX Runtime]  {average_runtime(onnx_run,    N_RUNS)*1000:.3f} ms")
+print(f"[Sparse Model]  {average_runtime(custom_run,  N_RUNS)*1000:.3f} ms")
 
