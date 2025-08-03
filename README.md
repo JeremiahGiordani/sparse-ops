@@ -167,7 +167,50 @@ Y_onx = model.run(X)
 
 ## Usage Examples
 
-*Examples remain unchanged from previous version.*
+### Vector Multiply
+
+```python
+import numpy as np
+from python.cpp_backend import encode, matvec
+
+W = np.random.randn(512, 256).astype(np.float32)
+W[W < 0.8] = 0.0                          # sparsify
+E = encode(W)                            # build Ellpack
+x = np.random.randn(256).astype(np.float32)
+bias = np.random.randn(512).astype(np.float32)
+
+y = matvec(E, x, bias)                   # shape = (512,)
+# y  ==  W @ x + bias
+```
+
+### Matrix Multiply
+
+```python
+import numpy as np
+from python.cpp_backend import encode, matmul
+
+W = np.random.randn(1024, 512).astype(np.float32)
+W[W < 0.9] = 0.0
+E = encode(W)
+
+X = np.random.randn(512, 10).astype(np.float32)
+bias = np.random.randn(1024).astype(np.float32)
+
+Y = matmul(E, X, bias)                   # shape = (1024, 10)
+# Y  ==  W @ X  +  bias[:,None]
+```
+
+The scripts under `tests/` (e.g. `test_matvec.py`, `test_matmul.py`) show how to integrate this into a benchmark loop, comparing against PyTorch, NumPy, and SciPy.
+
+### ONNX Model Inference
+
+```python
+import numpy as np
+from python.cpp_backend import OnnxModel
+
+model = OnnxModel("model.onnx")
+output = model.run(x_infer)
+```
 
 ---
 
