@@ -97,6 +97,13 @@ add_library(sparseops_backend MODULE
   src/ellpack_matmul.cpp
   src/activations.cpp
   src/sparse_onnx.cpp
+  src/model_run.cpp
+  src/layers/activation.cpp
+  src/layers/add.cpp
+  src/layers/conv.cpp
+  src/layers/flatten.cpp
+  src/layers/matmul.cpp
+  src/layers/pool.cpp
 )
 set_target_properties(sparseops_backend PROPERTIES
   PREFIX ""
