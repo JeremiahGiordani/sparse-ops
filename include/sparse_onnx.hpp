@@ -8,9 +8,15 @@
 #include <variant>
 #include <unordered_map>
 #include <array> 
+#include <cmath> 
+#include <algorithm>
+#include <cstring>
+#include <limits>
+#include <cstdlib>
 
-
+#include "ellpack_matmul.hpp"       // ellpack_matmul
 #include "ellpack_encoder.hpp"   // for Ellpack
+#include "activations.hpp"          // relu_inplace, sigmoid_inplace, tanh_inplace
 
 /// \file sparse_onnx.hpp
 /// C++ interface for loading an ONNX model and running inference
