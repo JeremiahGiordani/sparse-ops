@@ -121,6 +121,13 @@ PYBIND11_MODULE(sparseops_backend, m)
                 throw std::runtime_error("Bias length must equal E.m");
             }
 
+            size_t B = buf_X.shape[0], N = buf_X.shape[1];
+            const float* X_ptr = (const float*)buf_X.ptr;
+            std::vector<float> XT(N * B);
+            for (size_t b = 0; b < B; ++b)
+                for (size_t n = 0; n < N; ++n)
+                    XT[n*B + b] = X_ptr[b*N + n];
+
             uint32_t C = static_cast<uint32_t>(buf_X.shape[1]);
             std::array<ssize_t,2> shape = { (ssize_t)E.m, (ssize_t)C };
             py::array_t<float> Y_arr(shape);
@@ -128,7 +135,7 @@ PYBIND11_MODULE(sparseops_backend, m)
 
             ellpack_matmul(
                 E,
-                static_cast<const float*>(buf_X.ptr),
+                XT.data(),
                 C,
                 static_cast<const float*>(buf_bias.ptr),
                 static_cast<float*>(buf_Y.ptr)
