@@ -7,21 +7,49 @@
 #include <algorithm>  // std::fill, std::max
 #include <cstdint>  // uint32_t, uint64_t
 
+static void pack_BxN_to_NxB(
+    const float *src,      // [B × N] row‐major
+    float       *dst,      // [N × B] row‐major (i.e. [N rows][B cols])
+    size_t       B,
+    size_t       N
+) {
+    constexpr size_t Tile = 64;  // tune to your L1 size
+    for (size_t i0 = 0; i0 < N; i0 += Tile) {
+      size_t i_max = std::min(N, i0 + Tile);
+      for (size_t j0 = 0; j0 < B; j0 += Tile) {
+        size_t j_max = std::min(B, j0 + Tile);
+        for (size_t i = i0; i < i_max; ++i) {
+          const float *prow = src + i;        // &src[0*N + i]
+          float       *drow = dst + i*B;      // &dst[i*B + 0]
+          for (size_t j = j0; j < j_max; ++j) {
+            drow[j] = prow[j*N];               // src[j*N + i]
+          }
+        }
+      }
+    }
+}
+
 
 template<bool USE_MASK, bool FUSE_RELU>
 void ellpack_matmul_fused(
     const Ellpack&    E,
-    const float*      X,      // [N × C], row-major
+    const float*      X_ml,      // [N × C], row-major
     uint32_t          C,
     const float*      bias,   // [M]
     float*            Y       // [M × C], row-major
 ) {
     const uint32_t m = E.m;
+    const uint32_t N           = E.n; 
     const uint32_t r = E.r;
     const char* env = std::getenv("OMP_NUM_THREADS");
     int nth       = env ? std::atoi(env) : omp_get_max_threads();
     const bool use_avx512 = supports_avx512();
     const uint32_t simd_width = use_avx512 ? 16u : 8u;
+
+    std::vector<float> pack; 
+    pack.resize(size_t(N) * C);
+    pack_BxN_to_NxB(X_ml, pack.data(), C, N);
+    const float* X = pack.data();  // now [N rows][B cols]
 
     #pragma omp parallel for num_threads(nth) schedule(static)
     for (uint32_t i = 0; i < m; ++i) {
