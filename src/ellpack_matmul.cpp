@@ -1,3 +1,4 @@
+#include "utils.hpp"  
 #include "ellpack_matvec.hpp"
 #include <cstring>  // memcpy, memset
 #include <immintrin.h>
@@ -6,15 +7,8 @@
 #include <algorithm>  // std::fill, std::max
 #include <cstdint>  // uint32_t, uint64_t
 
-static inline bool supports_avx512() {
-#if defined(__GNUC__)
-    return __builtin_cpu_supports("avx512f");
-#else
-    return false;
-#endif
-}
 
-template <bool FUSE_RELU>
+template<bool USE_MASK, bool FUSE_RELU>
 void ellpack_matmul_fused(
     const Ellpack&    E,
     const float*      X,      // [N × C], row-major
@@ -47,11 +41,16 @@ void ellpack_matmul_fused(
         if (use_avx512) {
             for (uint32_t cb = 0; cb < C; cb += simd_width) {
                 // how many cols in this vector block?
-                uint32_t block_cols = std::min(simd_width, C - cb);
-                __mmask16 mask = (__mmask16(1) << block_cols) - 1;
+                __mmask16 mask = 0xFFFF;
+                if constexpr (USE_MASK) {
+                    uint32_t block_cols = std::min(simd_width, C - cb);
+                    mask = (__mmask16(1) << block_cols) - 1;
+                }
 
                 // load existing y-block
-                __m512 yv = _mm512_maskz_loadu_ps(mask, yrow + cb);
+                __m512 yv = USE_MASK
+                    ? _mm512_maskz_loadu_ps(mask, yrow + cb)
+                    : _mm512_loadu_ps(yrow + cb);
 
                 // accumulate each NNZ into the block
                 for (uint32_t j = 0; j < count; ++j) {
@@ -60,7 +59,9 @@ void ellpack_matmul_fused(
                     const float* xblk = X + size_t(col) * C + cb;
 
                     __m512 wv = _mm512_set1_ps(wj);
-                    __m512 xv = _mm512_maskz_loadu_ps(mask, xblk);
+                    __m512 xv = USE_MASK
+                        ? _mm512_maskz_loadu_ps(mask, xblk)
+                        : _mm512_loadu_ps(xblk);
                     yv = _mm512_fmadd_ps(wv, xv, yv);
                 }
 
@@ -69,7 +70,11 @@ void ellpack_matmul_fused(
                 }
 
                 // store back the updated y-block
-                _mm512_mask_storeu_ps(yrow + cb, mask, yv);
+                if constexpr (USE_MASK) {
+                    _mm512_mask_storeu_ps(yrow + cb, mask, yv);
+                } else {
+                    _mm512_storeu_ps(yrow + cb, yv);
+                }
             }
 
         } else {
@@ -87,8 +92,13 @@ void ellpack_matmul_fused(
 }
 
 
-// Tell the linker to generate code for both instantiations:
-template void ellpack_matmul_fused<false>(
+
+// Tell the linker to generate code for instantiations:
+template void ellpack_matmul_fused<false, false>(
     const Ellpack&, const float*, uint32_t, const float*, float*);
-template void ellpack_matmul_fused<true>(
+template void ellpack_matmul_fused<false, true>(
+    const Ellpack&, const float*, uint32_t, const float*, float*);
+template void ellpack_matmul_fused<true, false>(
+    const Ellpack&, const float*, uint32_t, const float*, float*);
+template void ellpack_matmul_fused<true, true>(
     const Ellpack&, const float*, uint32_t, const float*, float*);

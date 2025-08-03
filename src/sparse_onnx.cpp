@@ -17,6 +17,7 @@
 #include "ellpack_matmul.hpp"       // ellpack_matmul
 #include "activations.hpp"          // relu_inplace, sigmoid_inplace, tanh_inplace
 
+
 namespace {
 
 /// Helper to parse a TensorProto of floats into a flat std::vector<float>.
@@ -250,6 +251,10 @@ SparseOnnxModel::SparseOnnxModel(const std::string &onnx_path) {
             layer_bufs_[i].reset(reinterpret_cast<float*>(raw));
         }
     }
+
+    bool use_avx512   = supports_avx512();
+    simd_w   = use_avx512 ? 16u : 8u;
+    use_mask     = (batch_dim_ % simd_w) != 0;
 }
 
 void SparseOnnxModel::resize_buffers(uint32_t new_C) const {
@@ -265,6 +270,7 @@ void SparseOnnxModel::resize_buffers(uint32_t new_C) const {
             layer_bufs_[i].reset(reinterpret_cast<float*>(raw));
         }
     }
+    use_mask = (batch_dim_ % simd_w) != 0;
 }
 
 
@@ -302,15 +308,19 @@ void SparseOnnxModel::run(
                 dst = reinterpret_cast<float*>(raw);
             }
 
-            switch (L.op) {
-                case LayerOp::MatMul:
-                    ellpack_matmul_fused<false>(L.E, src, C, L.bias_ptr, dst);
-                    break;
-                case LayerOp::MatMulRelu:
-                    ellpack_matmul_fused<true>(L.E, src, C, L.bias_ptr, dst);
-                    break;
-                default:
-                    throw std::logic_error("Invalid MatMul op");
+            if (L.op == LayerOp::MatMul) {
+                if (use_mask) {
+                    ellpack_matmul_fused<true,  false>(L.E, src, C, L.bias_ptr, dst);
+                } else {
+                    ellpack_matmul_fused<false, false>(L.E, src, C, L.bias_ptr, dst);
+                }
+            }
+            else if (L.op == LayerOp::MatMulRelu) {
+                if (use_mask) {
+                    ellpack_matmul_fused<true,  true>(L.E, src, C, L.bias_ptr, dst);
+                } else {
+                    ellpack_matmul_fused<false, true>(L.E, src, C, L.bias_ptr, dst);
+                }
             }
 
             if (src != input) {

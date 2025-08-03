@@ -77,4 +77,6 @@ private:
     uint32_t                                      max_rows_;    ///< Max rows (m) across all MatMul layers
     uint32_t                                      output_rows_; ///< Rows of the final (last MatMul) layer
     size_t                                        last_matmul_idx_;
+    uint32_t                                      simd_w;
+    mutable bool                                  use_mask;
 };
