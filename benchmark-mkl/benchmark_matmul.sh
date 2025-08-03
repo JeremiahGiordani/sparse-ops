@@ -16,17 +16,11 @@ SEED=44
 IRREGULAR=0    # set to 1 if you want the last row fully dense
 # ------------------------------
 
-# (Optional) Pin to cores 0–7; comment out if not available
-# CMD_PREFIX="taskset -c 0-7"
-
 # Export thread counts & affinity knobs
 export OMP_NUM_THREADS=${OMP_THREADS}
 export MKL_NUM_THREADS=${MKL_THREADS}
 export MKL_DYNAMIC=FALSE
-export OMP_PLACES=cores
-export OMP_PROC_BIND=spread
 export KMP_BLOCKTIME=0
-# export KMP_AFFINITY=granularity=fine,compact
 
 echo "Warming up (${WARMUPS} runs)…"
 for i in $(seq 1 $WARMUPS); do

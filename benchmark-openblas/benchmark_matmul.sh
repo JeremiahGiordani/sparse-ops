@@ -7,7 +7,7 @@
 M=2000
 N=2000
 C=120
-SPARSITY=0.70
+SPARSITY=0.90
 WARMUPS=5       # # of dummy runs to warm pages, threads, freq
 RUNS=10
 OMP_THREADS=8
@@ -25,7 +25,7 @@ export OPENBLAS_NUM_THREADS=${OPENBLAS_THREADS}
 # export OMP_PLACES=cores
 # export OMP_PROC_BIND=spread
 export OPENBLAS_BLOCKTIME=0 
-# export KMP_BLOCKTIME=0
+export KMP_BLOCKTIME=0
 # export KMP_AFFINITY=granularity=fine,compact
 
 echo "Warming up (${WARMUPS} runs)…"

@@ -7,6 +7,7 @@ import torch
 import torch.nn as nn
 import torch.nn.utils.prune as prune
 import onnxruntime as ort
+import torch.nn.functional as F
 
 # import the new C++-backed Sparse ONNX model
 from sparseops_backend import SparseOnnxModel
@@ -27,40 +28,47 @@ def average_runtime(func, n_runs: int = 100):
 #  Define a simple 2-layer MLP in PyTorch and prune it
 # ────────────────────────────────────────────────────────────────
 class M(nn.Module):
-    def __init__(self, fc_1_in=8, fc_1_out=16, fc_2_in=16, fc_2_out=4):
+    def __init__(self, fc_in=8, fc_out=16, num_layers=10):
         super().__init__()
-        self.fc1 = nn.Linear(fc_1_in, fc_1_out)
-        self.fc2 = nn.Linear(fc_2_in, fc_2_out)
-    def forward(self, x):
-        return torch.relu(self.fc2(torch.relu(self.fc1(x))))
+        layers = []
+        for i in range(num_layers):
+            # first layer goes fc_in→fc_out, all others fc_out→fc_out
+            in_f  = fc_in  if i == 0 else fc_out
+            out_f = fc_out
+            layers.append(nn.Linear(in_f, out_f))
+        # register them properly
+        self.layers = nn.ModuleList(layers)
 
+    def forward(self, x):
+        for layer in self.layers:
+            x = F.relu(layer(x))
+        return x
 # ────────────────────────────────────────────────────────────────
 #  Configuration
 # ────────────────────────────────────────────────────────────────
-FC_1_IN, FC_1_OUT = 1000, 1000
-FC_2_IN, FC_2_OUT = FC_1_OUT, 12
-INPUT_DIM       = FC_1_IN
+FC_IN, FC_OUT = 1000, 1000
+INPUT_DIM       = FC_IN
+NUM_LAYERS      = 1
 SPARSITY        = 0.90
 N_RUNS          = 100
 SEED            = 42
 
-BATCH_DIM       = 2
+BATCH_DIM       = 64
 
 # ────────────────────────────────────────────────────────────────
 #  Prepare and export ONNX model
 # ────────────────────────────────────────────────────────────────
 torch.manual_seed(SEED)
-m = M(fc_1_in=FC_1_IN,
-      fc_1_out=FC_1_OUT,
-      fc_2_in=FC_2_IN,
-      fc_2_out=FC_2_OUT).eval()
+m = M(fc_in=FC_IN,
+      fc_out=FC_OUT,
+      num_layers=NUM_LAYERS).eval()
 
 # dummy input for export
 dummy = torch.randn(BATCH_DIM, INPUT_DIM, dtype=torch.float32)
 
 # apply random unstructured pruning to each weight matrix
-prune.random_unstructured(m.fc1, name="weight", amount=SPARSITY)
-prune.random_unstructured(m.fc2, name="weight", amount=SPARSITY)
+for layer in m.layers:
+    prune.random_unstructured(layer, name="weight", amount=SPARSITY)
 
 # export the pruned model
 onnx_path = "test_fc.onnx"
@@ -138,8 +146,9 @@ print("Torch vs SparseModel:   ", np.allclose(y_ref,   y_sp.T,    atol=1e-4))
 #  Benchmarking
 # ────────────────────────────────────────────────────────────────
 print("\n=== Benchmarking over", N_RUNS, "runs ===")
-print(f"Dimensions: FC1 {FC_1_IN}→{FC_1_OUT}, FC2 {FC_2_IN}→{FC_2_OUT}, Sparsity {SPARSITY:.1%}")
+print(f"Dimensions: FC {FC_IN}→{FC_OUT}, NUM_LAYERS {NUM_LAYERS}, Sparsity {SPARSITY:.1%}")
 print(f"Batch Dim: {BATCH_DIM}")
 print(f"[PyTorch]       {average_runtime(torch_run,   N_RUNS)*1000:.3f} ms")
 print(f"[Sparse Model]  {average_runtime(custom_run,  N_RUNS)*1000:.3f} ms")
 print(f"[ONNX Runtime]  {average_runtime(onnx_run,    N_RUNS)*1000:.3f} ms")
+

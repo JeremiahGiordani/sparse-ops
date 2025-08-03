@@ -23,9 +23,9 @@ OUTPUT_DIM = 64
 C = 12544
 
 # Benchmark dimensions:
-INPUT_DIM  = 2000
-OUTPUT_DIM = 2000
-C = 1
+INPUT_DIM  = 1000
+OUTPUT_DIM = 1000
+C = 64
 SPARSITY   = 0.90
 N_RUNS     = 100     # <-- number of repetitions
 SEED       = 42
