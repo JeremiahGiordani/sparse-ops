@@ -411,6 +411,11 @@ void SparseOnnxModel::run(
     uint32_t      C,
     float*       output
 ) const {
+    const float* input_ptr  = input;
+    float*       output_ptr = output;
+    std::unordered_map<std::string,bool> owned;
+    owned[input_name_] = false;   // we don’t free the user’s input
+
     // 1) Compute how many times each tensor is consumed
     std::unordered_map<std::string,int> refcount;
     for (const auto &L : layers_) {
@@ -436,18 +441,19 @@ void SparseOnnxModel::run(
             ins .push_back(buf.at(iname));
             in_rows.push_back(rows_map.at(iname));
         }
+        bool is_final = (L.outputs[0] == output_name_);
 
         // Dispatch to the appropriate helper
         RunResult R;
         switch (L.op) {
           case LayerOp::MatMul: {
             auto &m = std::get<MatMulAttr>(L.attr);
-            R = applyMatMul(m, ins[0], C);
+            R = applyMatMul(m, ins[0], C, is_final ? output_ptr : nullptr);
             break;
           }
           case LayerOp::MatMulRelu: {
             auto &m = std::get<MatMulAttr>(L.attr);
-            R = applyMatMulRelu(m, ins[0], C);
+            R = applyMatMulRelu(m, ins[0], C, is_final ? output_ptr : nullptr);
             break;
           }
           case LayerOp::Add: {
@@ -507,25 +513,21 @@ void SparseOnnxModel::run(
         for (const auto &oname : L.outputs) {
             buf[oname]      = R.data;
             rows_map[oname] = R.rows;
+            owned[oname] = R.owned;
         }
 
         // 5) Free any inputs no longer needed
-        for (const auto &iname : L.inputs) {
+        for (auto &iname : L.inputs) {
+            // decrement use‐count
             if (--refcount[iname] == 0 && iname != input_name_) {
+                // only free if we “owned” it (i.e. it wasn’t the user’s output)
+                if (owned[iname]) {
                 free(buf[iname]);
+                }
                 buf.erase(iname);
                 rows_map.erase(iname);
+                owned.erase(iname);
             }
-        }
-    }
-
-    // 6) Copy final result to user buffer and free
-    {
-        float* final_buf = buf.at(output_name_);
-        size_t tot       = size_t(output_rows_) * C;
-        std::memcpy(output, final_buf, tot * sizeof(float));
-        if (output_name_ != input_name_) {
-            free(final_buf);
         }
     }
 }
@@ -534,7 +536,8 @@ void SparseOnnxModel::run(
 RunResult SparseOnnxModel::applyMatMul(
     const MatMulAttr &m,
     const float      *src,
-    uint32_t          C
+    uint32_t          C,
+    float*            out_buf
 ) const {
     // Number of output rows
     uint32_t M = m.E.m;
@@ -563,7 +566,8 @@ RunResult SparseOnnxModel::applyMatMul(
 RunResult SparseOnnxModel::applyMatMulRelu(
     const MatMulAttr &m,
     const float      *src,
-    uint32_t          C
+    uint32_t          C,
+    float*            out_buf
 ) const {
     // Number of output rows
     uint32_t M = m.E.m;
@@ -572,10 +576,16 @@ RunResult SparseOnnxModel::applyMatMulRelu(
 
     // Allocate a 64‐byte‐aligned buffer for the output
     void *raw = nullptr;
-    if (posix_memalign(&raw, 64, elems * sizeof(float)) != 0) {
-        throw std::bad_alloc();
+    float* dst;
+    bool   owned = false;
+    if (out_buf) {
+        dst   = out_buf;
+        owned = false;
+    } else {
+        posix_memalign(&raw, 64, elems*sizeof(float));
+        dst   = reinterpret_cast<float*>(raw);
+        owned = true;
     }
-    float* dst = reinterpret_cast<float*>(raw);
 
     // Perform the sparse matmul (no ReLU fusion)
     // This calls ellpack_matmul_fused<false,false> under the hood
@@ -586,7 +596,7 @@ RunResult SparseOnnxModel::applyMatMulRelu(
     }
 
     // Return both the buffer pointer and the row count
-    return { dst, M };
+    return { dst, M, owned };
 }
 
 
@@ -595,9 +605,11 @@ RunResult SparseOnnxModel::applyAdd(
     const float     *A,
     const float     *B,
     uint32_t         rows,
-    uint32_t         C
+    uint32_t         C,
+    float*            out_buf
 ) const {
     size_t tot = size_t(rows) * C;
+    bool   owned = true;
     void *raw = nullptr;
     if (posix_memalign(&raw, 64, tot * sizeof(float)) != 0) {
         throw std::bad_alloc();
@@ -606,16 +618,18 @@ RunResult SparseOnnxModel::applyAdd(
     for (size_t i = 0; i < tot; ++i) {
         dst[i] = A[i] + B[i];
     }
-    return { dst, rows };
+    return { dst, rows, owned };
 }
 
 RunResult SparseOnnxModel::applyRelu(
     const ActAttr  &/*a*/,
     const float    *src,
     uint32_t        rows,
-    uint32_t        C
+    uint32_t        C,
+    float*            out_buf
 ) const {
     size_t tot = size_t(rows) * C;
+    bool   owned = true;
     void *raw = nullptr;
     if (posix_memalign(&raw, 64, tot * sizeof(float)) != 0) {
         throw std::bad_alloc();
@@ -625,16 +639,18 @@ RunResult SparseOnnxModel::applyRelu(
         float v = src[i];
         dst[i] = v > 0.0f ? v : 0.0f;
     }
-    return { dst, rows };
+    return { dst, rows, owned };
 }
 
 RunResult SparseOnnxModel::applySigmoid(
     const ActAttr  &/*a*/,
     const float    *src,
     uint32_t        rows,
-    uint32_t        C
+    uint32_t        C,
+    float*            out_buf
 ) const {
     size_t tot = size_t(rows) * C;
+    bool   owned = true;
     void *raw = nullptr;
     if (posix_memalign(&raw, 64, tot * sizeof(float)) != 0) {
         throw std::bad_alloc();
@@ -643,16 +659,18 @@ RunResult SparseOnnxModel::applySigmoid(
     for (size_t i = 0; i < tot; ++i) {
         dst[i] = 1.0f / (1.0f + std::exp(-src[i]));
     }
-    return { dst, rows };
+    return { dst, rows, owned };
 }
 
 RunResult SparseOnnxModel::applyTanh(
     const ActAttr  &/*a*/,
     const float    *src,
     uint32_t        rows,
-    uint32_t        C
+    uint32_t        C,
+    float*            out_buf
 ) const {
     size_t tot = size_t(rows) * C;
+    bool   owned = true;
     void *raw = nullptr;
     if (posix_memalign(&raw, 64, tot * sizeof(float)) != 0) {
         throw std::bad_alloc();
@@ -661,57 +679,64 @@ RunResult SparseOnnxModel::applyTanh(
     for (size_t i = 0; i < tot; ++i) {
         dst[i] = std::tanh(src[i]);
     }
-    return { dst, rows };
+    return { dst, rows, owned };
 }
 
 RunResult SparseOnnxModel::applyMaxPool(
     const PoolAttr &/*p*/,
     const float    *src,
     uint32_t        rows,
-    uint32_t        C
+    uint32_t        C,
+    float*            out_buf
 ) const {
     // Stub: just copy input back
     size_t tot = size_t(rows) * C;
+    bool   owned = true;
     void *raw = nullptr;
     posix_memalign(&raw, 64, tot * sizeof(float));
     float *dst = reinterpret_cast<float*>(raw);
     std::memcpy(dst, src, tot * sizeof(float));
-    return { dst, rows };
+    return { dst, rows, owned };
 }
 
 RunResult SparseOnnxModel::applyGlobalAveragePool(
     const PoolAttr &/*p*/,
     const float    *src,
     uint32_t        rows,
-    uint32_t        C
+    uint32_t        C,
+    float*            out_buf
 ) const {
     // Stub: copy input
     size_t tot = size_t(rows) * C;
+    bool   owned = true;
     void *raw = nullptr;
     posix_memalign(&raw, 64, tot * sizeof(float));
     float *dst = reinterpret_cast<float*>(raw);
     std::memcpy(dst, src, tot * sizeof(float));
-    return { dst, rows };
+    return { dst, rows, owned };
 }
 
 RunResult SparseOnnxModel::applyFlatten(
     const FlattenAttr &/*f*/,
     const float       *src,
     uint32_t           rows,
-    uint32_t           C
+    uint32_t           C,
+    float*            out_buf
 ) const {
     size_t tot = size_t(rows) * C;
+    bool   owned = true;
     void *raw = nullptr;
     posix_memalign(&raw, 64, tot * sizeof(float));
     float *dst = reinterpret_cast<float*>(raw);
     std::memcpy(dst, src, tot * sizeof(float));
-    return { dst, tot };  // new row count is rows*C
+    return { dst, tot, owned };  // new row count is rows*C
 }
 
 RunResult SparseOnnxModel::applyConv(
     const ConvAttr   &/*c*/,
     const float      *src,
-    uint32_t          C
+    uint32_t          C,
+    float*            out_buf
 ) const {
     // Stub: just pass src through
     // Assuming rows_map provides correct rows, we’ll just copy

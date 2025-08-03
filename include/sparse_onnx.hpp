@@ -77,13 +77,14 @@ struct Layer {
   LayerOp   op;
   LayerAttr attr;
   std::vector<std::string> inputs;   // graph inputs to this node
-  std::vector<std::string> outputs; 
+  std::vector<std::string> outputs;
 };
 
 
 struct RunResult {
     float*   data;  ///< pointer to the freshly‐allocated output buffer
     uint32_t rows;  ///< number of rows (the leading dim) of that buffer
+    bool owned;
 };
 
 
@@ -127,15 +128,15 @@ private:
     std::string                                   input_name_;
     std::string                                   output_name_;
     // per‐op helpers, return a freshly‐allocated buffer of shape [rows×C]
-    RunResult applyMatMul     (const MatMulAttr&   , const float* src, uint32_t C) const;
-    RunResult applyMatMulRelu (const MatMulAttr&   , const float* src, uint32_t C) const;
-    RunResult applyAdd        (const AddAttr&      , const float* A, const float* B, uint32_t rows, uint32_t C) const;
-    RunResult applyRelu       (const ActAttr&      , const float* src, uint32_t rows, uint32_t C) const;
-    RunResult applySigmoid    (const ActAttr&      , const float* src, uint32_t rows, uint32_t C) const;
-    RunResult applyTanh       (const ActAttr&      , const float* src, uint32_t rows, uint32_t C) const;
-    RunResult applyMaxPool    (const PoolAttr&     , const float* src, uint32_t rows, uint32_t C) const;
+    RunResult applyMatMul     (const MatMulAttr&   , const float* src, uint32_t C, float* out_buf = nullptr) const;
+    RunResult applyMatMulRelu (const MatMulAttr&   , const float* src, uint32_t C, float* out_buf = nullptr) const;
+    RunResult applyAdd        (const AddAttr&      , const float* A, const float* B, uint32_t rows, uint32_t C, float* out_buf = nullptr) const;
+    RunResult applyRelu       (const ActAttr&      , const float* src, uint32_t rows, uint32_t C, float* out_buf = nullptr) const;
+    RunResult applySigmoid    (const ActAttr&      , const float* src, uint32_t rows, uint32_t C, float* out_buf = nullptr) const;
+    RunResult applyTanh       (const ActAttr&      , const float* src, uint32_t rows, uint32_t C, float* out_buf = nullptr) const;
+    RunResult applyMaxPool    (const PoolAttr&     , const float* src, uint32_t rows, uint32_t C, float* out_buf = nullptr) const;
     RunResult applyGlobalAveragePool
-                          (const PoolAttr&     , const float* src, uint32_t rows, uint32_t C) const;
-    RunResult applyFlatten    (const FlattenAttr&  , const float* src, uint32_t rows, uint32_t C) const;
-    RunResult applyConv       (const ConvAttr&     , const float* src, uint32_t C) const;
+                          (const PoolAttr&     , const float* src, uint32_t rows, uint32_t C, float* out_buf = nullptr) const;
+    RunResult applyFlatten    (const FlattenAttr&  , const float* src, uint32_t rows, uint32_t C, float* out_buf = nullptr) const;
+    RunResult applyConv       (const ConvAttr&     , const float* src, uint32_t C, float* out_buf = nullptr) const;
 };
