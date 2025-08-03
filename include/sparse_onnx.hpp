@@ -50,14 +50,16 @@ struct MatMulAttr {
 
 
 struct ConvAttr {
-    std::vector<float>    kernel_data; // Raw kernel data in the order: [C_out, C_in, kH, kW]
-    std::array<int,4>     kernel_dims; // The corresponding dimensions: {C_out, C_in, kH, kW}
-    float*                bias_ptr;
-    std::vector<int>      kernel_shape; //   kernel_shape  = {kH, kW}
-    std::vector<int>      pads; //   pads          = {padH_begin, padW_begin, padH_end, padW_end}
-    std::vector<int>      strides; //   strides       = {sH, sW}
-    std::vector<int>      dilations; //   dilations     = {dH, dW}
-    int                   group;
+    // The ELLPACK handle for the *im2col* weight matrix, of size:
+    //   rows = Cout
+    //   cols = Cin * kH * kW
+    Ellpack              E;
+    float*               bias_ptr;
+    std::array<int,4>    kernel_dims; // dimensions: {Cout, Cin, kH, kW}
+    std::array<int,4>    pads; // {padH_begin, padW_begin, padH_end, padW_end}
+    std::array<int,2>    strides; // {sH, sW}
+    std::array<int,2>    dilations; // {dH, dW}
+    int                  group;
 };
 
 struct PoolAttr {
@@ -123,7 +125,6 @@ private:
 
     std::vector<Layer>                            layers_;      ///< Execution sequence
     std::unique_ptr<float[]>                      bias_data_;   ///< All biases packed contiguously
-    mutable std::vector<std::unique_ptr<float[]>> layer_bufs_;
     mutable uint32_t                              batch_dim_;   ///< Current batch size
 
     uint32_t                                      max_rows_;    ///< Max rows (m) across all MatMul layers
@@ -144,5 +145,5 @@ private:
     RunResult applyGlobalAveragePool
                           (const PoolAttr&     , const float* src, uint32_t rows, uint32_t C, float* out_buf = nullptr) const;
     RunResult applyFlatten    (const FlattenAttr&  , const float* src, uint32_t rows, uint32_t C, float* out_buf = nullptr) const;
-    RunResult applyConv       (const ConvAttr&     , const float* src, uint32_t C, float* out_buf = nullptr) const;
+    RunResult applyConv       (const ConvAttr&     , const float* src, uint32_t rows_in, uint32_t C, float* out_buf = nullptr) const;
 };

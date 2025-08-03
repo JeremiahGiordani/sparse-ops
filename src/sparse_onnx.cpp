@@ -257,26 +257,39 @@ SparseOnnxModel::SparseOnnxModel(const std::string &onnx_path) {
         }
 
         if (op == "Conv") {
-            // 1) Locate and unpack the weight initializer
+            // 1) Load & parse the raw 4D kernel
             auto itW = init_map.find(node.input(1));
             if (itW == init_map.end()) {
-                throw std::runtime_error("Conv weight initializer '" + node.input(1) + "' not found");
+                throw std::runtime_error("Conv weight initializer not found");
             }
             const onnx::TensorProto* W_tp = itW->second;
+            std::vector<float> raw_kernel;
+            parseTensor(*W_tp, raw_kernel);  // length = Cout*Cin*kH*kW
 
-            // Parse the raw kernel data (shape = [C_out, C_in, kH, kW])
-            std::vector<float> kernel_data;
-            parseTensor(*W_tp, kernel_data);
-
-            // Record the dims so we know how to index into that flat buffer
-            std::array<int,4> kernel_dims = {
-                int(W_tp->dims(0)),  // C_out
-                int(W_tp->dims(1)),  // C_in
+            // 2) Extract dimensions
+            std::array<int,4> dims = {
+                int(W_tp->dims(0)),  // Cout
+                int(W_tp->dims(1)),  // Cin
                 int(W_tp->dims(2)),  // kH
                 int(W_tp->dims(3))   // kW
             };
+            int Cout = dims[0], Cin = dims[1], kH = dims[2], kW = dims[3];
 
-            // 2) Optional bias initializer
+            // 3) Build the dense weight matrix of shape [Cout × (Cin*kH*kW)]
+            size_t M = size_t(Cout);
+            size_t N = size_t(Cin) * kH * kW;
+            std::vector<float> weight_mat;
+            weight_mat.reserve(M*N);
+            // raw_kernel is already in [Cout][Cin][kH][kW] row‐major order,
+            // so a straight copy yields the desired 2D layout:
+            weight_mat.insert(weight_mat.end(),
+                            raw_kernel.begin(),
+                            raw_kernel.end());
+
+            // 4) Encode into ELLPACK
+            Ellpack E = convert_to_ellpack(weight_mat.data(), static_cast<uint32_t>(M), static_cast<uint32_t>(N));
+
+            // 5) Optional bias
             std::vector<float> bias_vec;
             if (node.input_size() > 2) {
                 if (auto itB = init_map.find(node.input(2)); itB != init_map.end()) {
@@ -284,36 +297,51 @@ SparseOnnxModel::SparseOnnxModel(const std::string &onnx_path) {
                 }
             }
 
-            // 3) Read Conv attributes: pads, strides, dilations, group
-            ConvAttr c;
-            c.kernel_data   = std::move(kernel_data);
-            c.kernel_dims   = kernel_dims;
-            c.bias_ptr      = nullptr;  // will fill when we pack all biases
-            c.kernel_shape  = { kernel_dims[2], kernel_dims[3] };
-            c.pads          = {0,0,0,0};
-            c.strides       = {1,1};
-            c.dilations     = {1,1};
-            c.group         = 1;
+            // 6) Create the ConvAttr and push the layer
+            ConvAttr c {
+                std::move(E),          // ELLPACK handle
+                nullptr,               // bias_ptr
+                dims,                  // kernel_dims
+                {0,0,0,0},             // pads
+                {1,1},                 // strides
+                {1,1},                 // dilations
+                1                      // group
+            };
 
+            // Overwrite defaults from the node’s attributes
             for (const auto &A : node.attribute()) {
-                if      (A.name() == "pads")      c.pads      = { int(A.ints(0)), int(A.ints(1)), int(A.ints(2)), int(A.ints(3)) };
-                else if (A.name() == "strides")   c.strides   = { int(A.ints(0)), int(A.ints(1)) };
-                else if (A.name() == "dilations") c.dilations = { int(A.ints(0)), int(A.ints(1)) };
-                else if (A.name() == "group")     c.group     = int(A.i());
+                const std::string &n = A.name();
+                if (n == "pads" && A.ints_size() == 4) {
+                    c.pads = {
+                        int(A.ints(0)), int(A.ints(1)),
+                        int(A.ints(2)), int(A.ints(3))
+                    };
+                }
+                else if (n == "strides" && A.ints_size() == 2) {
+                    c.strides = {
+                        int(A.ints(0)), int(A.ints(1))
+                    };
+                }
+                else if (n == "dilations" && A.ints_size() == 2) {
+                    c.dilations = {
+                        int(A.ints(0)), int(A.ints(1))
+                    };
+                }
+                else if (n == "group") {
+                    c.group = static_cast<int>(A.i());
+                }
             }
 
-            // 4) Push the layer + its bias plan
             layers_.push_back({
                 LayerType::Conv,
                 LayerOp::Conv,
                 std::move(c),
-                /* convolution input */
-                { node.input(0) },
-                /* convolution output */
-                { node.output(0) }
+                /* inputs  */ { node.input(0) },
+                /* outputs */ { node.output(0) }
             });
-            bias_plans.push_back({ layers_.size() - 1,
-                                std::move(bias_vec) });
+
+            // 7) Schedule its bias for packing
+            bias_plans.push_back({ layers_.size()-1, std::move(bias_vec) });
 
             continue;
         }
@@ -351,23 +379,6 @@ SparseOnnxModel::SparseOnnxModel(const std::string &onnx_path) {
         }
 
         bptr += len;  // advance to next free slot
-    }
-
-    // ——— Allocate per-layer scratch buffers for MatMul ———
-    layer_bufs_.resize(layers_.size());
-    for (size_t i = 0; i < layers_.size(); ++i) {
-        const Layer &L = layers_[i];
-        if (L.type == LayerType::MatMul) {
-            // only MatMul (plain or fused) needs a scratch [m × batch_dim_] buffer
-            auto &ma = std::get<MatMulAttr>(L.attr);
-            uint32_t m    = ma.E.m;
-            size_t   need = size_t(m) * batch_dim_;
-            void    *raw  = nullptr;
-            if (posix_memalign(&raw, 64, need * sizeof(float)) != 0) {
-                throw std::bad_alloc();
-            }
-            layer_bufs_[i].reset(reinterpret_cast<float*>(raw));
-        }
     }
 
     // Last MatMul layer index

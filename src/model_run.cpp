@@ -95,7 +95,7 @@ void SparseOnnxModel::run(
           }
           case LayerOp::Conv: {
             auto &c = std::get<ConvAttr>(L.attr);
-            R = applyConv(c, ins[0], C);
+            R = applyConv(c, ins[0],in_rows[0], C);
             break;
           }
           default:
