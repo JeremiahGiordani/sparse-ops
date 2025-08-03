@@ -85,3 +85,10 @@ void ellpack_matmul_fused(
         }
     }
 }
+
+
+// Tell the linker to generate code for both instantiations:
+template void ellpack_matmul_fused<false>(
+    const Ellpack&, const float*, uint32_t, const float*, float*);
+template void ellpack_matmul_fused<true>(
+    const Ellpack&, const float*, uint32_t, const float*, float*);
