@@ -16,6 +16,12 @@
 /// Supported layer types in the ONNX graph.
 enum class LayerType {
     MatMul,
+    Activation
+};
+
+enum class LayerOp {
+    MatMul,
+    MatMulRelu,
     Relu,
     Sigmoid,
     Tanh
@@ -56,6 +62,7 @@ public:
 private:
     struct Layer {
         LayerType       type;      ///< MatMul or activation
+        LayerOp         op;        ///< Actual Operation
         Ellpack         E;         ///< Pre-encoded sparse weight handle
         float*          bias_ptr;  ///< Pointer into bias_data_ (length = E.m)
     };

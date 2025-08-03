@@ -95,6 +95,7 @@ SparseOnnxModel::SparseOnnxModel(const std::string &onnx_path) {
     // Temporary staging for (type, ELLPACK, bias_vector)
     struct TempLayer {
         LayerType          type;
+        LayerOp            op;
         Ellpack            E;
         std::vector<float> bias;  // may be empty
     };
@@ -103,8 +104,43 @@ SparseOnnxModel::SparseOnnxModel(const std::string &onnx_path) {
     max_rows_ = 0;
 
     // 4) Walk the graph and record layers
-    for (const auto &node : graph.node()) {
+    for (size_t idx = 0; idx < graph.node_size(); ++idx) {
+        const auto &node = graph.node(idx);
         const std::string &op = node.op_type();
+
+        if ((op == "MatMul" || op == "Gemm")
+            && idx+1 < graph.node_size()
+            && graph.node(idx+1).op_type() == "Relu") {
+            // parse weight initializer
+            auto itW = init_map.find(node.input(1));
+            if (itW == init_map.end())
+                throw std::runtime_error("Weight initializer '" + node.input(1) + "' not found");
+            const onnx::TensorProto* W_tp = itW->second;
+
+            // parse data & shape
+            std::vector<float> W_data;
+            parseTensor(*W_tp, W_data);
+            uint32_t M = W_tp->dims(0), N = W_tp->dims(1);
+            Ellpack E = convert_to_ellpack(W_data.data(), M, N);
+
+            // optional bias (only for Gemm)
+            std::vector<float> bias_vec;
+            if (op == "Gemm" && node.input_size() > 2) {
+                auto itB = init_map.find(node.input(2));
+                if (itB != init_map.end()) parseTensor(*itB->second, bias_vec);
+            }
+
+            temp_layers.push_back({ LayerType::MatMul,
+                                    LayerOp::MatMulRelu,
+                                    std::move(E),
+                                    std::move(bias_vec) });
+            max_rows_ = std::max(max_rows_, M);
+
+            // skip the next Relu node since we've fused it
+            ++idx;
+            continue;
+        }
+
         if (op == "MatMul" || op == "Gemm") {
             // weight initializer → input(1)
             auto itW = init_map.find(node.input(1));
@@ -137,18 +173,27 @@ SparseOnnxModel::SparseOnnxModel(const std::string &onnx_path) {
             }
 
             temp_layers.push_back({LayerType::MatMul,
+                                   LayerOp::MatMul,
                                    std::move(E),
                                    std::move(bias_vec)});
             max_rows_ = std::max(max_rows_, M);
-
-        } else if (op == "Relu" || op == "Sigmoid" || op == "Tanh") {
-            LayerType t = (op == "Relu"    ? LayerType::Relu
-                          : op == "Sigmoid"? LayerType::Sigmoid
-                                            : LayerType::Tanh);
-            temp_layers.push_back({t, Ellpack(0u,0u,0u), {}});
-        } else {
-            throw std::runtime_error("Unsupported ONNX op: " + op);
+            continue;
+        } 
+        
+        if (op == "Relu" || op == "Sigmoid" || op == "Tanh") {
+            temp_layers.push_back({
+                LayerType::Activation,
+                (op=="Relu"    ? LayerOp::Relu
+                : op=="Sigmoid"? LayerOp::Sigmoid
+                                : LayerOp::Tanh),
+                Ellpack(0,0,0),
+                {}
+            });
+            continue;
         }
+        
+        throw std::runtime_error("Unsupported ONNX op: " + op);
+    
     }
 
     // 5) Pack all biases into one buffer
@@ -168,7 +213,7 @@ SparseOnnxModel::SparseOnnxModel(const std::string &onnx_path) {
             std::memcpy(ptr, tl.bias.data(), tl.bias.size()*sizeof(float));
             bias_off += tl.bias.size();
         }
-        layers_.push_back({tl.type, std::move(tl.E), ptr});
+        layers_.push_back({tl.type, tl.op, std::move(tl.E), ptr});
     }
 
     last_matmul_idx_ = 0;
@@ -232,7 +277,6 @@ void SparseOnnxModel::run(
     if (C != batch_dim_) {
         resize_buffers(C);
     }
-    omp_set_schedule(omp_sched_static, 1);
 
     // 'src' always points to the current activation buffer
     const float* src = input;
@@ -258,22 +302,17 @@ void SparseOnnxModel::run(
                 dst = reinterpret_cast<float*>(raw);
             }
 
-            // --- DEBUG: check that 'dst' is 64-byte aligned and row-major strided ---
-            // {
-            //     uintptr_t p0 = reinterpret_cast<uintptr_t>(dst);
-            //     uintptr_t p1 = reinterpret_cast<uintptr_t>(dst + C);  // start of row 1
-            //     std::cerr << "[DBG] layer=" << i
-            //             << " dst%64=" << (p0 % 64)
-            //             << " nextrow%64=" << (p1 % 64) << "\n";
-            // }
+            switch (L.op) {
+                case LayerOp::MatMul:
+                    ellpack_matmul_fused<false>(L.E, src, C, L.bias_ptr, dst);
+                    break;
+                case LayerOp::MatMulRelu:
+                    ellpack_matmul_fused<true>(L.E, src, C, L.bias_ptr, dst);
+                    break;
+                default:
+                    throw std::logic_error("Invalid MatMul op");
+            }
 
-            ellpack_matmul(
-                L.E,            // the ELLPACK handle
-                src,            // input [n × C]
-                C,              // batch size
-                L.bias_ptr,     // length = E.m
-                dst             // writes [m × C]
-            );
             if (src != input) {
                 free(const_cast<float*>(src));
             }
@@ -287,14 +326,14 @@ void SparseOnnxModel::run(
                           ? layers_[0].E.n        // input_dim for first layer
                           : layers_[i-1].E.m);    // rows of previous MatMul
             size_t len = static_cast<size_t>(n) * C;
-            switch (L.type) {
-              case LayerType::Relu:
+            switch (L.op) {
+              case LayerOp::Relu:
                 relu_inplace(const_cast<float*>(src), len);
                 break;
-              case LayerType::Sigmoid:
+              case LayerOp::Sigmoid:
                 sigmoid_inplace(const_cast<float*>(src), len);
                 break;
-              case LayerType::Tanh:
+              case LayerOp::Tanh:
                 tanh_inplace(const_cast<float*>(src), len);
                 break;
               default:
