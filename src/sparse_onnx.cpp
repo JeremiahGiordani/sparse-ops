@@ -232,7 +232,6 @@ void SparseOnnxModel::run(
     if (C != batch_dim_) {
         resize_buffers(C);
     }
-    omp_set_schedule(omp_sched_static, 1);
 
     // 'src' always points to the current activation buffer
     const float* src = input;
@@ -245,7 +244,7 @@ void SparseOnnxModel::run(
             bool   is_last = (i == last_matmul_idx_);
             float* dst;
             if (is_last && false) {
-                // final layer → write directly into the user’s buffer
+                // final layer → write directly into the output buffer
                 dst = output;
             } else {
                 // allocate a fresh, 64-byte aligned scratch for this layer
@@ -257,15 +256,6 @@ void SparseOnnxModel::run(
                 }
                 dst = reinterpret_cast<float*>(raw);
             }
-
-            // --- DEBUG: check that 'dst' is 64-byte aligned and row-major strided ---
-            // {
-            //     uintptr_t p0 = reinterpret_cast<uintptr_t>(dst);
-            //     uintptr_t p1 = reinterpret_cast<uintptr_t>(dst + C);  // start of row 1
-            //     std::cerr << "[DBG] layer=" << i
-            //             << " dst%64=" << (p0 % 64)
-            //             << " nextrow%64=" << (p1 % 64) << "\n";
-            // }
 
             ellpack_matmul(
                 L.E,            // the ELLPACK handle
@@ -303,9 +293,4 @@ void SparseOnnxModel::run(
             // 'src' remains the same buffer for the next layer
         }
     }
-    std::memcpy(
-        output,
-        src,
-        static_cast<size_t>(output_rows_) * C * sizeof(float)
-    );
 }
