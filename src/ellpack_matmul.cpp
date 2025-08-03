@@ -14,7 +14,8 @@ static inline bool supports_avx512() {
 #endif
 }
 
-void ellpack_matmul(
+template <bool FUSE_RELU>
+void ellpack_matmul_fused(
     const Ellpack&    E,
     const float*      X,      // [N × C], row-major
     uint32_t          C,
@@ -61,6 +62,10 @@ void ellpack_matmul(
                     __m512 wv = _mm512_set1_ps(wj);
                     __m512 xv = _mm512_maskz_loadu_ps(mask, xblk);
                     yv = _mm512_fmadd_ps(wv, xv, yv);
+                }
+
+                if constexpr(FUSE_RELU) {
+                    yv = _mm512_max_ps(yv, _mm512_setzero_ps());
                 }
 
                 // store back the updated y-block
