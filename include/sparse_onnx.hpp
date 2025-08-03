@@ -5,6 +5,10 @@
 #include <cstdint>
 #include <memory>
 #include <vector>
+#include <variant>
+#include <unordered_map>
+#include <array> 
+
 
 #include "ellpack_encoder.hpp"   // for Ellpack
 
@@ -14,18 +18,74 @@
 /// inferred from the model’s input shape.
 
 /// Supported layer types in the ONNX graph.
-enum class LayerType {
-    MatMul,
-    Activation
+enum class LayerType {  
+  MatMul,      // matmul or fused matmul+relu  
+  Activation,  // relu/sigmoid/tanh  
+  Elementwise, // add  
+  Pool,        // maxpool/globalavgpool  
+  Reshape,     // flatten  
+  Conv         // convolution  
+};  
+
+enum class LayerOp {  
+  MatMul, MatMulRelu,  
+  Relu, Sigmoid, Tanh,  
+  Add,  
+  MaxPool, GlobalAveragePool,  
+  Flatten,  
+  Conv  
 };
 
-enum class LayerOp {
-    MatMul,
-    MatMulRelu,
-    Relu,
-    Sigmoid,
-    Tanh
+// 1) Define each payload type
+struct MatMulAttr {
+  Ellpack    E;
+  float*     bias_ptr;    // length = E.m
 };
+
+
+struct ConvAttr {
+    std::vector<float>    kernel_data; // Raw kernel data in the order: [C_out, C_in, kH, kW]
+    std::array<int,4>     kernel_dims; // The corresponding dimensions: {C_out, C_in, kH, kW}
+    float*                bias_ptr;
+    std::vector<int>      kernel_shape; //   kernel_shape  = {kH, kW}
+    std::vector<int>      pads; //   pads          = {padH_begin, padW_begin, padH_end, padW_end}
+    std::vector<int>      strides; //   strides       = {sH, sW}
+    std::vector<int>      dilations; //   dilations     = {dH, dW}
+    int                   group;
+};
+
+struct PoolAttr {
+  std::vector<int>   kernel_shape;  // {kH, kW}
+  std::vector<int>   pads;          // same convention
+  std::vector<int>   strides;       // {sH, sW}
+  bool               is_global;     // true for GlobalAveragePool
+};
+
+struct FlattenAttr {
+  int axis;  // e.g. 1
+};
+
+struct AddAttr { /* no payload */ };
+struct ActAttr { /* no payload */ };
+
+// 2) Combine into one variant
+using LayerAttr = std::variant<
+    MatMulAttr, ConvAttr, PoolAttr, FlattenAttr, AddAttr, ActAttr>;
+
+struct Layer {
+  LayerType type;
+  LayerOp   op;
+  LayerAttr attr;
+  std::vector<std::string> inputs;   // graph inputs to this node
+  std::vector<std::string> outputs; 
+};
+
+
+struct RunResult {
+    float*   data;  ///< pointer to the freshly‐allocated output buffer
+    uint32_t rows;  ///< number of rows (the leading dim) of that buffer
+};
+
 
 /// A simple ONNX-backed sparse inference engine that
 /// — Parses a fixed-batch ONNX model at load time,
@@ -52,22 +112,7 @@ public:
     /// Number of rows (m) in the final output (i.e., output_dim).
     uint32_t output_rows() const { return output_rows_; }
 
-    const Ellpack& get_ellpack_at(size_t i) const {
-        return layers_.at(i).E;
-    }
-    const float* get_bias_at(size_t i) const {
-        return layers_.at(i).bias_ptr;
-    }
-
 private:
-    struct Layer {
-        LayerType       type;      ///< MatMul or activation
-        LayerOp         op;        ///< Actual Operation
-        Ellpack         E;         ///< Pre-encoded sparse weight handle
-        float*          bias_ptr;  ///< Pointer into bias_data_ (length = E.m)
-    };
-
-    void resize_buffers(uint32_t new_C) const;
 
     std::vector<Layer>                            layers_;      ///< Execution sequence
     std::unique_ptr<float[]>                      bias_data_;   ///< All biases packed contiguously
@@ -79,4 +124,18 @@ private:
     size_t                                        last_matmul_idx_;
     uint32_t                                      simd_w;
     mutable bool                                  use_mask;
+    std::string                                   input_name_;
+    std::string                                   output_name_;
+    // per‐op helpers, return a freshly‐allocated buffer of shape [rows×C]
+    RunResult applyMatMul     (const MatMulAttr&   , const float* src, uint32_t C) const;
+    RunResult applyMatMulRelu (const MatMulAttr&   , const float* src, uint32_t C) const;
+    RunResult applyAdd        (const AddAttr&      , const float* A, const float* B, uint32_t rows, uint32_t C) const;
+    RunResult applyRelu       (const ActAttr&      , const float* src, uint32_t rows, uint32_t C) const;
+    RunResult applySigmoid    (const ActAttr&      , const float* src, uint32_t rows, uint32_t C) const;
+    RunResult applyTanh       (const ActAttr&      , const float* src, uint32_t rows, uint32_t C) const;
+    RunResult applyMaxPool    (const PoolAttr&     , const float* src, uint32_t rows, uint32_t C) const;
+    RunResult applyGlobalAveragePool
+                          (const PoolAttr&     , const float* src, uint32_t rows, uint32_t C) const;
+    RunResult applyFlatten    (const FlattenAttr&  , const float* src, uint32_t rows, uint32_t C) const;
+    RunResult applyConv       (const ConvAttr&     , const float* src, uint32_t C) const;
 };

@@ -12,6 +12,8 @@
 #include <cstddef>
 #include <limits>
 #include <omp.h>
+#include <cstdlib>
+#include <cmath> 
 
 #include "ellpack_encoder.hpp"      // convert_to_ellpack, Ellpack
 #include "ellpack_matmul.hpp"       // ellpack_matmul
@@ -49,15 +51,12 @@ static void parseTensor(
 } // anonymous namespace
 
 SparseOnnxModel::SparseOnnxModel(const std::string &onnx_path) {
-    // 1) Load ONNX model from file
+    // 1) Load ONNX model
     onnx::ModelProto model;
     {
         std::ifstream in(onnx_path, std::ios::binary);
-        if (!in) {
-            throw std::runtime_error("Failed to open ONNX file: " + onnx_path);
-        }
-        if (!model.ParseFromIstream(&in)) {
-            throw std::runtime_error("Failed to parse ONNX model: " + onnx_path);
+        if (!in || !model.ParseFromIstream(&in)) {
+            throw std::runtime_error("Failed to open/parse ONNX file: " + onnx_path);
         }
     }
     const auto &graph = model.graph();
@@ -69,154 +68,318 @@ SparseOnnxModel::SparseOnnxModel(const std::string &onnx_path) {
         init_map[init.name()] = &init;
     }
 
-    // 3) Infer fixed batch dimension from first non-initializer input
-    batch_dim_ = 1;
+    // Find the real model input (skip initializers)
+    input_name_.clear();
     for (const auto &vi : graph.input()) {
-        if (init_map.count(vi.name())) {
-            // this input is actually an initializer (constant), skip
+        const std::string &nm = vi.name();
+        if (init_map.count(nm)) {
             continue;
         }
-        if (!vi.has_type() || !vi.type().has_tensor_type()) {
-            throw std::runtime_error("Input '" + vi.name() +
-                "' has no tensor_type");
-        }
-        const auto &shape = vi.type().tensor_type().shape();
-        if (shape.dim_size() != 2) {
-            throw std::runtime_error("Expected 2D input (batch × features), got "
-                + std::to_string(shape.dim_size()) + "D for '" + vi.name() + "'");
-        }
-        const auto &dim0 = shape.dim(0);
-        if (!dim0.has_dim_value()) {
-            throw std::runtime_error("Dynamic batch dimension not supported");
-        }
-        batch_dim_ = static_cast<uint32_t>(dim0.dim_value());
+        input_name_ = nm;
+        break;
+    }
+    if (input_name_.empty()) {
+        throw std::runtime_error("No non-initializer input found in ONNX graph");
+    }
+
+    // Record the (single) graph output
+    if (graph.output_size() != 1) {
+        throw std::runtime_error("Expected exactly one graph output");
+    }
+    output_name_ = graph.output(0).name();
+
+    // 3) Infer fixed batch_dim_ from first non‐initializer input
+    batch_dim_ = 1;
+    for (const auto &vi : graph.input()) {
+        if (init_map.count(vi.name())) continue;  // skip constant inputs
+        auto &shape = vi.type().tensor_type().shape();
+        if (shape.dim_size()!=2 || !shape.dim(0).has_dim_value())
+            throw std::runtime_error("Expected static 2D input");
+        batch_dim_ = shape.dim(0).dim_value();
         break;
     }
 
-    // Temporary staging for (type, ELLPACK, bias_vector)
-    struct TempLayer {
-        LayerType          type;
-        LayerOp            op;
-        Ellpack            E;
-        std::vector<float> bias;  // may be empty
-    };
-    std::vector<TempLayer> temp_layers;
-    temp_layers.reserve(graph.node_size());
-    max_rows_ = 0;
+    // 4) Stage 1: Collect all bias vectors so we can pack them into one big buffer
+    struct BiasPlan { size_t layer_idx; std::vector<float> data; };
+    std::vector<BiasPlan> bias_plans;
+    bias_plans.reserve(graph.node_size());
 
-    // 4) Walk the graph and record layers
+    // 5) Walk the graph & build layers_
+    layers_.reserve(graph.node_size());
     for (size_t idx = 0; idx < graph.node_size(); ++idx) {
         const auto &node = graph.node(idx);
-        const std::string &op = node.op_type();
+        const auto &op   = node.op_type();
 
-        if ((op == "MatMul" || op == "Gemm")
-            && idx+1 < graph.node_size()
-            && graph.node(idx+1).op_type() == "Relu") {
-            // parse weight initializer
+        // ——— Fuse MatMul/Gemm → Relu ———
+        if ((op=="MatMul" || op=="Gemm")
+            && idx+1<graph.node_size()
+            && graph.node(idx+1).op_type()=="Relu")
+        {
+            // --- parse weight initializer ---
             auto itW = init_map.find(node.input(1));
-            if (itW == init_map.end())
-                throw std::runtime_error("Weight initializer '" + node.input(1) + "' not found");
-            const onnx::TensorProto* W_tp = itW->second;
+            if (itW==init_map.end())
+                throw std::runtime_error("Weight '" + node.input(1) + "' not found");
+            auto *W_tp = itW->second;
 
-            // parse data & shape
+            // --- unpack weight data & dims ---
+            std::vector<float> W_data;
+            parseTensor(*W_tp, W_data);
+            uint32_t M = W_tp->dims(0), N = W_tp->dims(1);
+
+            // --- encode to ELLPACK ---
+            Ellpack E = convert_to_ellpack(W_data.data(), M, N);
+
+            // --- optional bias (only for Gemm) ---
+            std::vector<float> bdata;
+            if (op=="Gemm" && node.input_size()>2) {
+                if (auto itB = init_map.find(node.input(2)); itB != init_map.end()) {
+                    parseTensor(*itB->second, bdata);
+                }
+            }
+
+            // --- record layer + bias plan ---
+            MatMulAttr matmul_attr{ std::move(E), nullptr };
+
+            // build the fused layer
+            layers_.push_back({
+                LayerType::MatMul,               // category
+                LayerOp::MatMulRelu,             // specific op
+                std::move(matmul_attr),          // payload
+                /* inputs: only the activation tensor */ 
+                { node.input(0) },
+                /* outputs: the Relu’s single output */
+                { graph.node(idx+1).output(0) }
+            });
+            bias_plans.push_back({ layers_.size()-1, std::move(bdata) });
+
+            ++idx;  // skip the Relu node
+            continue;
+        }
+
+        // ——— Plain MatMul / Gemm ———
+        if (op=="MatMul" || op=="Gemm") {
+            auto itW = init_map.find(node.input(1));
+            if (itW==init_map.end())
+                throw std::runtime_error("Weight '" + node.input(1) + "' not found");
+            auto *W_tp = itW->second;
+
             std::vector<float> W_data;
             parseTensor(*W_tp, W_data);
             uint32_t M = W_tp->dims(0), N = W_tp->dims(1);
             Ellpack E = convert_to_ellpack(W_data.data(), M, N);
 
-            // optional bias (only for Gemm)
-            std::vector<float> bias_vec;
-            if (op == "Gemm" && node.input_size() > 2) {
-                auto itB = init_map.find(node.input(2));
-                if (itB != init_map.end()) parseTensor(*itB->second, bias_vec);
+            std::vector<float> bdata;
+            if (op=="Gemm" && node.input_size()>2) {
+                if (auto itB = init_map.find(node.input(2)); itB != init_map.end()) {
+                    parseTensor(*itB->second, bdata);
+                }
             }
 
-            temp_layers.push_back({ LayerType::MatMul,
-                                    LayerOp::MatMulRelu,
-                                    std::move(E),
-                                    std::move(bias_vec) });
-            max_rows_ = std::max(max_rows_, M);
-
-            // skip the next Relu node since we've fused it
-            ++idx;
+            MatMulAttr matmul_attr{ std::move(E), nullptr };
+            layers_.push_back({
+                LayerType::MatMul,
+                LayerOp::MatMul,
+                std::move(matmul_attr),
+                /* inputs: only the activation tensor */
+                { node.input(0) },
+                /* outputs: this node’s output */
+                { node.output(0) }
+            });
+            bias_plans.push_back({ layers_.size()-1, std::move(bdata) });
             continue;
         }
 
-        if (op == "MatMul" || op == "Gemm") {
-            // weight initializer → input(1)
+        // ——— Elementwise Add ———
+        if (op=="Add") {
+            layers_.push_back({
+                LayerType::Elementwise,
+                LayerOp::Add,
+                AddAttr{},                // no payload
+                /* both inputs to add */
+                { node.input(0), node.input(1) },
+                /* single output */
+                { node.output(0) }
+            });
+            continue;
+        }
+
+        // ——— Activations ———
+        if (op=="Relu" || op=="Sigmoid" || op=="Tanh") {
+            LayerOp lop = (op=="Relu"    ? LayerOp::Relu
+                           : op=="Sigmoid"? LayerOp::Sigmoid
+                                          : LayerOp::Tanh);
+            layers_.push_back({
+                LayerType::Activation,
+                lop,
+                ActAttr{},                // no payload
+                /* activation input */
+                { node.input(0) },
+                /* activation output */
+                { node.output(0) }
+            });
+            continue;
+        }
+
+        // ——— Pooling ———
+        if (op=="MaxPool" || op=="GlobalAveragePool") {
+            onnx::NodeProto const &n = node;
+            PoolAttr p;
+            p.is_global = (op=="GlobalAveragePool");
+            // read attributes…
+            for (auto &attr : n.attribute()) {
+                if      (attr.name()=="kernel_shape") p.kernel_shape = {attr.ints().Get(0), attr.ints().Get(1)};
+                else if (attr.name()=="strides")      p.strides      = {attr.ints().Get(0), attr.ints().Get(1)};
+                else if (attr.name()=="pads")         p.pads         = {attr.ints().Get(0), attr.ints().Get(1),
+                                                                          attr.ints().Get(2), attr.ints().Get(3)};
+            }
+            LayerOp lop = (op=="MaxPool"
+                         ? LayerOp::MaxPool
+                         : LayerOp::GlobalAveragePool);
+            layers_.push_back({
+                LayerType::Pool,
+                lop,
+                std::move(p),
+                /* pooling input */
+                { node.input(0) },
+                /* pooling output */
+                { node.output(0) }
+            });
+            continue;
+        }
+
+        // ——— Flatten ———
+        if (op=="Flatten") {
+            int axis = 1;
+            for (auto &a : node.attribute()) {
+                if (a.name()=="axis") { axis = static_cast<int>(a.i()); break; }
+            }
+            layers_.push_back({
+                LayerType::Reshape,
+                LayerOp::Flatten,
+                FlattenAttr{axis},
+                /* flatten input */
+                { node.input(0) },
+                /* flatten output */
+                { node.output(0) }
+            });
+            continue;
+        }
+
+        if (op == "Conv") {
+            // 1) Locate and unpack the weight initializer
             auto itW = init_map.find(node.input(1));
             if (itW == init_map.end()) {
-                throw std::runtime_error("Weight initializer '" +
-                    node.input(1) + "' not found");
+                throw std::runtime_error("Conv weight initializer '" + node.input(1) + "' not found");
             }
             const onnx::TensorProto* W_tp = itW->second;
 
-            // parse weight into vector
-            std::vector<float> W_data;
-            parseTensor(*W_tp, W_data);
+            // Parse the raw kernel data (shape = [C_out, C_in, kH, kW])
+            std::vector<float> kernel_data;
+            parseTensor(*W_tp, kernel_data);
 
-            if (W_tp->dims_size() != 2) {
-                throw std::runtime_error("Weight tensor must be 2D");
-            }
-            uint32_t M = static_cast<uint32_t>(W_tp->dims(0));
-            uint32_t N = static_cast<uint32_t>(W_tp->dims(1));
+            // Record the dims so we know how to index into that flat buffer
+            std::array<int,4> kernel_dims = {
+                int(W_tp->dims(0)),  // C_out
+                int(W_tp->dims(1)),  // C_in
+                int(W_tp->dims(2)),  // kH
+                int(W_tp->dims(3))   // kW
+            };
 
-            // ELLPACK encode
-            Ellpack E = convert_to_ellpack(W_data.data(), M, N);
-
-            // optional bias for Gemm
+            // 2) Optional bias initializer
             std::vector<float> bias_vec;
-            if (op == "Gemm" && node.input_size() > 2) {
-                auto itB = init_map.find(node.input(2));
-                if (itB != init_map.end()) {
+            if (node.input_size() > 2) {
+                if (auto itB = init_map.find(node.input(2)); itB != init_map.end()) {
                     parseTensor(*itB->second, bias_vec);
                 }
             }
 
-            temp_layers.push_back({LayerType::MatMul,
-                                   LayerOp::MatMul,
-                                   std::move(E),
-                                   std::move(bias_vec)});
-            max_rows_ = std::max(max_rows_, M);
-            continue;
-        } 
-        
-        if (op == "Relu" || op == "Sigmoid" || op == "Tanh") {
-            temp_layers.push_back({
-                LayerType::Activation,
-                (op=="Relu"    ? LayerOp::Relu
-                : op=="Sigmoid"? LayerOp::Sigmoid
-                                : LayerOp::Tanh),
-                Ellpack(0,0,0),
-                {}
+            // 3) Read Conv attributes: pads, strides, dilations, group
+            ConvAttr c;
+            c.kernel_data   = std::move(kernel_data);
+            c.kernel_dims   = kernel_dims;
+            c.bias_ptr      = nullptr;  // will fill when we pack all biases
+            c.kernel_shape  = { kernel_dims[2], kernel_dims[3] };
+            c.pads          = {0,0,0,0};
+            c.strides       = {1,1};
+            c.dilations     = {1,1};
+            c.group         = 1;
+
+            for (const auto &A : node.attribute()) {
+                if      (A.name() == "pads")      c.pads      = { int(A.ints(0)), int(A.ints(1)), int(A.ints(2)), int(A.ints(3)) };
+                else if (A.name() == "strides")   c.strides   = { int(A.ints(0)), int(A.ints(1)) };
+                else if (A.name() == "dilations") c.dilations = { int(A.ints(0)), int(A.ints(1)) };
+                else if (A.name() == "group")     c.group     = int(A.i());
+            }
+
+            // 4) Push the layer + its bias plan
+            layers_.push_back({
+                LayerType::Conv,
+                LayerOp::Conv,
+                std::move(c),
+                /* convolution input */
+                { node.input(0) },
+                /* convolution output */
+                { node.output(0) }
             });
+            bias_plans.push_back({ layers_.size() - 1,
+                                std::move(bias_vec) });
+
             continue;
         }
-        
+
         throw std::runtime_error("Unsupported ONNX op: " + op);
-    
     }
 
-    // 5) Pack all biases into one buffer
+    // Sum up every bias vector’s length
     size_t total_bias = 0;
-    for (auto &tl : temp_layers) {
-        total_bias += tl.bias.size();
+    for (auto &bp : bias_plans) {
+        total_bias += bp.data.size();
     }
+
+    // Allocate one contiguous block
     bias_data_.reset(new float[total_bias]);
-    float *bias_ptr = bias_data_.get();
+    float* bptr = bias_data_.get();
 
-    layers_.reserve(temp_layers.size());
-    size_t bias_off = 0;
-    for (auto &tl : temp_layers) {
-        float* ptr = nullptr;
-        if (!tl.bias.empty()) {
-            ptr = bias_ptr + bias_off;
-            std::memcpy(ptr, tl.bias.data(), tl.bias.size()*sizeof(float));
-            bias_off += tl.bias.size();
+    // Copy each bias vector into the block and update the Layer’s payload
+    for (auto &bp : bias_plans) {
+        size_t idx = bp.layer_idx;
+        size_t len = bp.data.size();
+
+        // memcpy into the big buffer
+        std::memcpy(bptr, bp.data.data(), len * sizeof(float));
+
+        // Point the payload’s bias_ptr at this slice
+        Layer &L = layers_[idx];
+        if (std::holds_alternative<MatMulAttr>(L.attr)) {
+            auto &ma = std::get<MatMulAttr>(L.attr);
+            ma.bias_ptr = bptr;
         }
-        layers_.push_back({tl.type, tl.op, std::move(tl.E), ptr});
+        else if (std::holds_alternative<ConvAttr>(L.attr)) {
+            auto &ca = std::get<ConvAttr>(L.attr);
+            ca.bias_ptr = bptr;
+        }
+
+        bptr += len;  // advance to next free slot
     }
 
+    // ——— Allocate per-layer scratch buffers for MatMul ———
+    layer_bufs_.resize(layers_.size());
+    for (size_t i = 0; i < layers_.size(); ++i) {
+        const Layer &L = layers_[i];
+        if (L.type == LayerType::MatMul) {
+            // only MatMul (plain or fused) needs a scratch [m × batch_dim_] buffer
+            auto &ma = std::get<MatMulAttr>(L.attr);
+            uint32_t m    = ma.E.m;
+            size_t   need = size_t(m) * batch_dim_;
+            void    *raw  = nullptr;
+            if (posix_memalign(&raw, 64, need * sizeof(float)) != 0) {
+                throw std::bad_alloc();
+            }
+            layer_bufs_[i].reset(reinterpret_cast<float*>(raw));
+        }
+    }
+
+    // Last MatMul layer index
     last_matmul_idx_ = 0;
     for (size_t i = 0; i < layers_.size(); ++i) {
         if (layers_[i].type == LayerType::MatMul) {
@@ -224,11 +387,12 @@ SparseOnnxModel::SparseOnnxModel(const std::string &onnx_path) {
         }
     }
 
-    // 6) Determine output_rows_ = m of last MatMul
+    // Number of output rows = m of the final MatMul
     output_rows_ = 0;
     for (auto it = layers_.rbegin(); it != layers_.rend(); ++it) {
         if (it->type == LayerType::MatMul) {
-            output_rows_ = it->E.m;
+            auto &ma = std::get<MatMulAttr>(it->attr);
+            output_rows_ = ma.E.m;
             break;
         }
     }
@@ -236,120 +400,322 @@ SparseOnnxModel::SparseOnnxModel(const std::string &onnx_path) {
         throw std::runtime_error("No MatMul layer found for output dimension");
     }
 
-    // 7) allocate one scratch buffer per MatMul layer
-    layer_bufs_.resize(layers_.size());
-    for (size_t i = 0; i < layers_.size(); ++i) {
-        if (layers_[i].type == LayerType::MatMul) {
-            uint32_t m = layers_[i].E.m;
-            size_t   need = size_t(m) * batch_dim_;
-
-            // ensure 64-byte alignment
-            void *raw = nullptr;
-            if (posix_memalign(&raw, 64, need * sizeof(float)) != 0) {
-                throw std::bad_alloc();
-            }
-            layer_bufs_[i].reset(reinterpret_cast<float*>(raw));
-        }
-    }
-
     bool use_avx512   = supports_avx512();
     simd_w   = use_avx512 ? 16u : 8u;
     use_mask     = (batch_dim_ % simd_w) != 0;
 }
 
-void SparseOnnxModel::resize_buffers(uint32_t new_C) const {
-    batch_dim_ = new_C;
-    for (size_t i = 0; i < layers_.size(); ++i) {
-        if (layers_[i].type == LayerType::MatMul) {
-            uint32_t m = layers_[i].E.m;
-            size_t   need = size_t(m) * batch_dim_;
-            void *raw = nullptr;
-            if (posix_memalign(&raw, 64, need * sizeof(float)) != 0) {
-                throw std::bad_alloc();
-            }
-            layer_bufs_[i].reset(reinterpret_cast<float*>(raw));
+
+void SparseOnnxModel::run(
+    const float* input,
+    uint32_t      C,
+    float*       output
+) const {
+    // 1) Compute how many times each tensor is consumed
+    std::unordered_map<std::string,int> refcount;
+    for (const auto &L : layers_) {
+        for (const auto &iname : L.inputs) {
+            refcount[iname]++;
         }
     }
-    use_mask = (batch_dim_ % simd_w) != 0;
+
+    // 2) Prepare buffers and shape map, seed with the model input
+    std::unordered_map<std::string,float*>   buf;
+    std::unordered_map<std::string,uint32_t> rows_map;
+    buf[input_name_]       = const_cast<float*>(input);
+    rows_map[input_name_]  = batch_dim_;
+
+    // 3) Execute each layer in sequence
+    for (const auto &L : layers_) {
+        // Gather input pointers and their row counts
+        std::vector<float*>   ins;
+        std::vector<uint32_t> in_rows;
+        ins.reserve(L.inputs.size());
+        in_rows.reserve(L.inputs.size());
+        for (const auto &iname : L.inputs) {
+            ins .push_back(buf.at(iname));
+            in_rows.push_back(rows_map.at(iname));
+        }
+
+        // Dispatch to the appropriate helper
+        RunResult R;
+        switch (L.op) {
+          case LayerOp::MatMul: {
+            auto &m = std::get<MatMulAttr>(L.attr);
+            R = applyMatMul(m, ins[0], C);
+            break;
+          }
+          case LayerOp::MatMulRelu: {
+            auto &m = std::get<MatMulAttr>(L.attr);
+            R = applyMatMulRelu(m, ins[0], C);
+            break;
+          }
+          case LayerOp::Add: {
+            R = applyAdd(
+                std::get<AddAttr>(L.attr),
+                ins[0], ins[1],
+                in_rows[0], C);
+            break;
+          }
+          case LayerOp::Relu: {
+            R = applyRelu(
+                std::get<ActAttr>(L.attr),
+                ins[0], in_rows[0], C);
+            break;
+          }
+          case LayerOp::Sigmoid: {
+            R = applySigmoid(
+                std::get<ActAttr>(L.attr),
+                ins[0], in_rows[0], C);
+            break;
+          }
+          case LayerOp::Tanh: {
+            R = applyTanh(
+                std::get<ActAttr>(L.attr),
+                ins[0], in_rows[0], C);
+            break;
+          }
+          case LayerOp::MaxPool: {
+            R = applyMaxPool(
+                std::get<PoolAttr>(L.attr),
+                ins[0], in_rows[0], C);
+            break;
+          }
+          case LayerOp::GlobalAveragePool: {
+            R = applyGlobalAveragePool(
+                std::get<PoolAttr>(L.attr),
+                ins[0], in_rows[0], C);
+            break;
+          }
+          case LayerOp::Flatten: {
+            R = applyFlatten(
+                std::get<FlattenAttr>(L.attr),
+                ins[0], in_rows[0], C);
+            break;
+          }
+          case LayerOp::Conv: {
+            auto &c = std::get<ConvAttr>(L.attr);
+            R = applyConv(c, ins[0], C);
+            break;
+          }
+          default:
+            throw std::logic_error("Unhandled LayerOp in run(): " +
+                                   std::to_string(int(L.op)));
+        }
+
+        // 4) Register outputs under their tensor names
+        for (const auto &oname : L.outputs) {
+            buf[oname]      = R.data;
+            rows_map[oname] = R.rows;
+        }
+
+        // 5) Free any inputs no longer needed
+        for (const auto &iname : L.inputs) {
+            if (--refcount[iname] == 0 && iname != input_name_) {
+                free(buf[iname]);
+                buf.erase(iname);
+                rows_map.erase(iname);
+            }
+        }
+    }
+
+    // 6) Copy final result to user buffer and free
+    {
+        float* final_buf = buf.at(output_name_);
+        size_t tot       = size_t(output_rows_) * C;
+        std::memcpy(output, final_buf, tot * sizeof(float));
+        if (output_name_ != input_name_) {
+            free(final_buf);
+        }
+    }
 }
 
 
-void SparseOnnxModel::run(
-    const float *input,
-    uint32_t      C,
-    float       *output
+RunResult SparseOnnxModel::applyMatMul(
+    const MatMulAttr &m,
+    const float      *src,
+    uint32_t          C
 ) const {
-    // Ensure the batch size matches the fixed dimension we inferred
-    if (C != batch_dim_) {
-        resize_buffers(C);
+    // Number of output rows
+    uint32_t M = m.E.m;
+    // Total elements = M rows × C columns
+    size_t   elems = size_t(M) * C;
+
+    // Allocate a 64‐byte‐aligned buffer for the output
+    void *raw = nullptr;
+    if (posix_memalign(&raw, 64, elems * sizeof(float)) != 0) {
+        throw std::bad_alloc();
+    }
+    float* dst = reinterpret_cast<float*>(raw);
+
+    // Perform the sparse matmul (no ReLU fusion)
+    // This calls ellpack_matmul_fused<false,false> under the hood
+    if (use_mask) {
+        ellpack_matmul_fused<true,  false>(m.E, src, C, m.bias_ptr, dst);
+    } else {
+        ellpack_matmul_fused<false, false>(m.E, src, C, m.bias_ptr, dst);
     }
 
-    // 'src' always points to the current activation buffer
-    const float* src = input;
+    // Return both the buffer pointer and the row count
+    return { dst, M };
+}
 
-    for (size_t i = 0; i < layers_.size(); ++i) {
-        const Layer &L = layers_[i];
+RunResult SparseOnnxModel::applyMatMulRelu(
+    const MatMulAttr &m,
+    const float      *src,
+    uint32_t          C
+) const {
+    // Number of output rows
+    uint32_t M = m.E.m;
+    // Total elements = M rows × C columns
+    size_t   elems = size_t(M) * C;
 
-        if (L.type == LayerType::MatMul) {
-            // MatMul: write into the pre‐allocated buffer for this layer
-            bool   is_last = (i == last_matmul_idx_);
-            float* dst;
-            if (is_last) {
-                // final layer → write directly into the user’s buffer
-                dst = output;
-            } else {
-                // allocate a fresh, 64-byte aligned scratch for this layer
-                uint32_t m    = L.E.m;
-                size_t   need = size_t(m) * C;
-                void    *raw  = nullptr;
-                if (posix_memalign(&raw, 64, need * sizeof(float)) != 0) {
-                    throw std::bad_alloc();
-                }
-                dst = reinterpret_cast<float*>(raw);
-            }
-
-            if (L.op == LayerOp::MatMul) {
-                if (use_mask) {
-                    ellpack_matmul_fused<true,  false>(L.E, src, C, L.bias_ptr, dst);
-                } else {
-                    ellpack_matmul_fused<false, false>(L.E, src, C, L.bias_ptr, dst);
-                }
-            }
-            else if (L.op == LayerOp::MatMulRelu) {
-                if (use_mask) {
-                    ellpack_matmul_fused<true,  true>(L.E, src, C, L.bias_ptr, dst);
-                } else {
-                    ellpack_matmul_fused<false, true>(L.E, src, C, L.bias_ptr, dst);
-                }
-            }
-
-            if (src != input) {
-                free(const_cast<float*>(src));
-            }
-
-            // the next layer reads from here
-            src = dst;
-
-        } else {
-            // Activation: apply in-place on 'src' (size = prev_m × C)
-            uint32_t n = (i == 0
-                          ? layers_[0].E.n        // input_dim for first layer
-                          : layers_[i-1].E.m);    // rows of previous MatMul
-            size_t len = static_cast<size_t>(n) * C;
-            switch (L.op) {
-              case LayerOp::Relu:
-                relu_inplace(const_cast<float*>(src), len);
-                break;
-              case LayerOp::Sigmoid:
-                sigmoid_inplace(const_cast<float*>(src), len);
-                break;
-              case LayerOp::Tanh:
-                tanh_inplace(const_cast<float*>(src), len);
-                break;
-              default:
-                break;
-            }
-            // 'src' remains the same buffer for the next layer
-        }
+    // Allocate a 64‐byte‐aligned buffer for the output
+    void *raw = nullptr;
+    if (posix_memalign(&raw, 64, elems * sizeof(float)) != 0) {
+        throw std::bad_alloc();
     }
+    float* dst = reinterpret_cast<float*>(raw);
+
+    // Perform the sparse matmul (no ReLU fusion)
+    // This calls ellpack_matmul_fused<false,false> under the hood
+    if (use_mask) {
+        ellpack_matmul_fused<true,  true>(m.E, src, C, m.bias_ptr, dst);
+    } else {
+        ellpack_matmul_fused<false, true>(m.E, src, C, m.bias_ptr, dst);
+    }
+
+    // Return both the buffer pointer and the row count
+    return { dst, M };
+}
+
+
+RunResult SparseOnnxModel::applyAdd(
+    const AddAttr   &/*a*/,
+    const float     *A,
+    const float     *B,
+    uint32_t         rows,
+    uint32_t         C
+) const {
+    size_t tot = size_t(rows) * C;
+    void *raw = nullptr;
+    if (posix_memalign(&raw, 64, tot * sizeof(float)) != 0) {
+        throw std::bad_alloc();
+    }
+    float *dst = reinterpret_cast<float*>(raw);
+    for (size_t i = 0; i < tot; ++i) {
+        dst[i] = A[i] + B[i];
+    }
+    return { dst, rows };
+}
+
+RunResult SparseOnnxModel::applyRelu(
+    const ActAttr  &/*a*/,
+    const float    *src,
+    uint32_t        rows,
+    uint32_t        C
+) const {
+    size_t tot = size_t(rows) * C;
+    void *raw = nullptr;
+    if (posix_memalign(&raw, 64, tot * sizeof(float)) != 0) {
+        throw std::bad_alloc();
+    }
+    float *dst = reinterpret_cast<float*>(raw);
+    for (size_t i = 0; i < tot; ++i) {
+        float v = src[i];
+        dst[i] = v > 0.0f ? v : 0.0f;
+    }
+    return { dst, rows };
+}
+
+RunResult SparseOnnxModel::applySigmoid(
+    const ActAttr  &/*a*/,
+    const float    *src,
+    uint32_t        rows,
+    uint32_t        C
+) const {
+    size_t tot = size_t(rows) * C;
+    void *raw = nullptr;
+    if (posix_memalign(&raw, 64, tot * sizeof(float)) != 0) {
+        throw std::bad_alloc();
+    }
+    float *dst = reinterpret_cast<float*>(raw);
+    for (size_t i = 0; i < tot; ++i) {
+        dst[i] = 1.0f / (1.0f + std::exp(-src[i]));
+    }
+    return { dst, rows };
+}
+
+RunResult SparseOnnxModel::applyTanh(
+    const ActAttr  &/*a*/,
+    const float    *src,
+    uint32_t        rows,
+    uint32_t        C
+) const {
+    size_t tot = size_t(rows) * C;
+    void *raw = nullptr;
+    if (posix_memalign(&raw, 64, tot * sizeof(float)) != 0) {
+        throw std::bad_alloc();
+    }
+    float *dst = reinterpret_cast<float*>(raw);
+    for (size_t i = 0; i < tot; ++i) {
+        dst[i] = std::tanh(src[i]);
+    }
+    return { dst, rows };
+}
+
+RunResult SparseOnnxModel::applyMaxPool(
+    const PoolAttr &/*p*/,
+    const float    *src,
+    uint32_t        rows,
+    uint32_t        C
+) const {
+    // Stub: just copy input back
+    size_t tot = size_t(rows) * C;
+    void *raw = nullptr;
+    posix_memalign(&raw, 64, tot * sizeof(float));
+    float *dst = reinterpret_cast<float*>(raw);
+    std::memcpy(dst, src, tot * sizeof(float));
+    return { dst, rows };
+}
+
+RunResult SparseOnnxModel::applyGlobalAveragePool(
+    const PoolAttr &/*p*/,
+    const float    *src,
+    uint32_t        rows,
+    uint32_t        C
+) const {
+    // Stub: copy input
+    size_t tot = size_t(rows) * C;
+    void *raw = nullptr;
+    posix_memalign(&raw, 64, tot * sizeof(float));
+    float *dst = reinterpret_cast<float*>(raw);
+    std::memcpy(dst, src, tot * sizeof(float));
+    return { dst, rows };
+}
+
+RunResult SparseOnnxModel::applyFlatten(
+    const FlattenAttr &/*f*/,
+    const float       *src,
+    uint32_t           rows,
+    uint32_t           C
+) const {
+    size_t tot = size_t(rows) * C;
+    void *raw = nullptr;
+    posix_memalign(&raw, 64, tot * sizeof(float));
+    float *dst = reinterpret_cast<float*>(raw);
+    std::memcpy(dst, src, tot * sizeof(float));
+    return { dst, tot };  // new row count is rows*C
+}
+
+RunResult SparseOnnxModel::applyConv(
+    const ConvAttr   &/*c*/,
+    const float      *src,
+    uint32_t          C
+) const {
+    // Stub: just pass src through
+    // Assuming rows_map provides correct rows, we’ll just copy
+    // but we need the rows; for now, assume rows_map[src_name]
+    // has been captured externally; so we throw:
+    throw std::runtime_error("applyConv stub: not yet implemented");
 }
