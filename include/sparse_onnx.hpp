@@ -91,7 +91,7 @@ struct Layer {
 
 struct RunResult {
     float*   data;  ///< pointer to the freshly‐allocated output buffer
-    uint32_t rows;  ///< number of rows (the leading dim) of that buffer
+    uint32_t features;  ///< number of rows of that buffer
     bool owned;
 };
 
@@ -112,11 +112,11 @@ public:
 
     /// Run inference:
     ///  - \p input: pointer to float array of shape [input_dim × batch_dim]
-    ///  - \p C: must equal the batch_dim inferred at load time
+    ///  - \p B: must equal the batch_dim inferred at load time
     ///  - \p output: pointer to float array of shape [output_dim × batch_dim]
     ///
     /// Both input and output are row-major contiguous.
-    void run(const float* input, uint32_t C, float* output) const;
+    void run(const float* input, uint32_t B, float* output) const;
 
     /// Number of rows (m) in the final output (i.e., output_dim).
     uint32_t output_rows() const { return output_rows_; }
@@ -125,25 +125,25 @@ private:
 
     std::vector<Layer>                            layers_;      ///< Execution sequence
     std::unique_ptr<float[]>                      bias_data_;   ///< All biases packed contiguously
-    mutable uint32_t                              batch_dim_;   ///< Current batch size
+    uint32_t                                      batch_dim_;   ///< Current batch size
+    uint32_t                                      in_features_; ///< Input feature size
 
     uint32_t                                      max_rows_;    ///< Max rows (m) across all MatMul layers
     uint32_t                                      output_rows_; ///< Rows of the final (last MatMul) layer
     size_t                                        last_matmul_idx_;
     uint32_t                                      simd_w;
-    mutable bool                                  use_mask;
+    bool                                          use_mask;
     std::string                                   input_name_;
     std::string                                   output_name_;
     // per‐op helpers, return a freshly‐allocated buffer of shape [rows×C]
-    RunResult applyMatMul     (const MatMulAttr&   , const float* src, uint32_t C, float* out_buf = nullptr) const;
-    RunResult applyMatMulRelu (const MatMulAttr&   , const float* src, uint32_t C, float* out_buf = nullptr) const;
-    RunResult applyAdd        (const AddAttr&      , const float* A, const float* B, uint32_t rows, uint32_t C, float* out_buf = nullptr) const;
-    RunResult applyRelu       (const ActAttr&      , const float* src, uint32_t rows, uint32_t C, float* out_buf = nullptr) const;
-    RunResult applySigmoid    (const ActAttr&      , const float* src, uint32_t rows, uint32_t C, float* out_buf = nullptr) const;
-    RunResult applyTanh       (const ActAttr&      , const float* src, uint32_t rows, uint32_t C, float* out_buf = nullptr) const;
-    RunResult applyMaxPool    (const PoolAttr&     , const float* src, uint32_t rows, uint32_t C, float* out_buf = nullptr) const;
-    RunResult applyGlobalAveragePool
-                          (const PoolAttr&     , const float* src, uint32_t rows, uint32_t C, float* out_buf = nullptr) const;
-    RunResult applyFlatten    (const FlattenAttr&  , const float* src, uint32_t rows, uint32_t C, float* out_buf = nullptr) const;
-    RunResult applyConv       (const ConvAttr&     , const float* src, uint32_t rows_in, uint32_t C, float* out_buf = nullptr) const;
+    RunResult applyMatMul            (const MatMulAttr&   , const float* src, uint32_t B, float* out_buf = nullptr) const;
+    RunResult applyMatMulRelu        (const MatMulAttr&   , const float* src, uint32_t B, float* out_buf = nullptr) const;
+    RunResult applyAdd               (const AddAttr&      , const float* in_A, const float* in_B, uint32_t features, uint32_t B, float* out_buf = nullptr) const;
+    RunResult applyRelu              (const ActAttr&      , const float* src, uint32_t features, uint32_t B, float* out_buf = nullptr) const;
+    RunResult applySigmoid           (const ActAttr&      , const float* src, uint32_t features, uint32_t B, float* out_buf = nullptr) const;
+    RunResult applyTanh              (const ActAttr&      , const float* src, uint32_t features, uint32_t B, float* out_buf = nullptr) const;
+    RunResult applyMaxPool           (const PoolAttr&     , const float* src, uint32_t features, uint32_t B, float* out_buf = nullptr) const;
+    RunResult applyGlobalAveragePool (const PoolAttr&     , const float* src, uint32_t features, uint32_t B, float* out_buf = nullptr) const;
+    RunResult applyFlatten           (const FlattenAttr&  , const float* src, uint32_t features, uint32_t B, float* out_buf = nullptr) const;
+    RunResult applyConv              (const ConvAttr&     , const float* src, uint32_t features_in, uint32_t B, float* out_buf = nullptr) const;
 };

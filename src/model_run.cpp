@@ -2,7 +2,7 @@
 
 void SparseOnnxModel::run(
     const float* input,
-    uint32_t      C,
+    uint32_t      B,
     float*       output
 ) const {
     const float* input_ptr  = input;
@@ -20,20 +20,20 @@ void SparseOnnxModel::run(
 
     // 2) Prepare buffers and shape map, seed with the model input
     std::unordered_map<std::string,float*>   buf;
-    std::unordered_map<std::string,uint32_t> rows_map;
+    std::unordered_map<std::string,uint32_t> features_map;
     buf[input_name_]       = const_cast<float*>(input);
-    rows_map[input_name_]  = batch_dim_;
+    features_map[input_name_] = in_features_;
 
     // 3) Execute each layer in sequence
     for (const auto &L : layers_) {
         // Gather input pointers and their row counts
         std::vector<float*>   ins;
-        std::vector<uint32_t> in_rows;
+        std::vector<uint32_t> in_features;
         ins.reserve(L.inputs.size());
-        in_rows.reserve(L.inputs.size());
+        in_features.reserve(L.inputs.size());
         for (const auto &iname : L.inputs) {
             ins .push_back(buf.at(iname));
-            in_rows.push_back(rows_map.at(iname));
+            in_features.push_back(features_map.at(iname));
         }
         bool is_final = (L.outputs[0] == output_name_);
 
@@ -42,60 +42,60 @@ void SparseOnnxModel::run(
         switch (L.op) {
           case LayerOp::MatMul: {
             auto &m = std::get<MatMulAttr>(L.attr);
-            R = applyMatMul(m, ins[0], C, is_final ? output_ptr : nullptr);
+            R = applyMatMul(m, ins[0], B, is_final ? output_ptr : nullptr);
             break;
           }
           case LayerOp::MatMulRelu: {
             auto &m = std::get<MatMulAttr>(L.attr);
-            R = applyMatMulRelu(m, ins[0], C, is_final ? output_ptr : nullptr);
+            R = applyMatMulRelu(m, ins[0], B, is_final ? output_ptr : nullptr);
             break;
           }
           case LayerOp::Add: {
             R = applyAdd(
                 std::get<AddAttr>(L.attr),
                 ins[0], ins[1],
-                in_rows[0], C);
+                in_features[0], B);
             break;
           }
           case LayerOp::Relu: {
             R = applyRelu(
                 std::get<ActAttr>(L.attr),
-                ins[0], in_rows[0], C);
+                ins[0], in_features[0], B);
             break;
           }
           case LayerOp::Sigmoid: {
             R = applySigmoid(
                 std::get<ActAttr>(L.attr),
-                ins[0], in_rows[0], C);
+                ins[0], in_features[0], B);
             break;
           }
           case LayerOp::Tanh: {
             R = applyTanh(
                 std::get<ActAttr>(L.attr),
-                ins[0], in_rows[0], C);
+                ins[0], in_features[0], B);
             break;
           }
           case LayerOp::MaxPool: {
             R = applyMaxPool(
                 std::get<PoolAttr>(L.attr),
-                ins[0], in_rows[0], C);
+                ins[0], in_features[0], B);
             break;
           }
           case LayerOp::GlobalAveragePool: {
             R = applyGlobalAveragePool(
                 std::get<PoolAttr>(L.attr),
-                ins[0], in_rows[0], C);
+                ins[0], in_features[0], B);
             break;
           }
           case LayerOp::Flatten: {
             R = applyFlatten(
                 std::get<FlattenAttr>(L.attr),
-                ins[0], in_rows[0], C);
+                ins[0], in_features[0], B);
             break;
           }
           case LayerOp::Conv: {
             auto &c = std::get<ConvAttr>(L.attr);
-            R = applyConv(c, ins[0],in_rows[0], C);
+            R = applyConv(c, ins[0],in_features[0], B);
             break;
           }
           default:
@@ -106,7 +106,7 @@ void SparseOnnxModel::run(
         // 4) Register outputs under their tensor names
         for (const auto &oname : L.outputs) {
             buf[oname]      = R.data;
-            rows_map[oname] = R.rows;
+            features_map[oname] = R.features;
             owned[oname] = R.owned;
         }
 
@@ -119,7 +119,7 @@ void SparseOnnxModel::run(
                 free(buf[iname]);
                 }
                 buf.erase(iname);
-                rows_map.erase(iname);
+                features_map.erase(iname);
                 owned.erase(iname);
             }
         }

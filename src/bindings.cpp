@@ -151,13 +151,13 @@ PYBIND11_MODULE(sparseops_backend, m)
              "Load an ONNX model and pre-encode weights to ELLPACK")
         .def("run",
             [](const SparseOnnxModel &model,
-               py::array_t<float, py::array::c_style | py::array::forcecast> X) {
+               py::array_t<float, py::array::f_style | py::array::forcecast> X) {
                 auto buf = X.request();
                 if (buf.ndim != 2) {
                     throw std::runtime_error("Input must be a 2D array");
                 }
-                uint32_t n = static_cast<uint32_t>(buf.shape[0]);
-                uint32_t C = static_cast<uint32_t>(buf.shape[1]);
+                uint32_t n = static_cast<uint32_t>(buf.shape[1]);
+                uint32_t C = static_cast<uint32_t>(buf.shape[0]);
                 const float* input_ptr = static_cast<const float*>(buf.ptr);
 
                 uint32_t M = model.output_rows();

@@ -3,11 +3,11 @@
 RunResult SparseOnnxModel::applyFlatten(
     const FlattenAttr &/*f*/,
     const float       *src,
-    uint32_t           rows,
-    uint32_t           C,
+    uint32_t           features,
+    uint32_t           B,
     float*            out_buf
 ) const {
-    size_t tot = size_t(rows) * C;
+    size_t tot = size_t(features) * B;
     bool   owned = true;
     void *raw = nullptr;
     posix_memalign(&raw, 64, tot * sizeof(float));

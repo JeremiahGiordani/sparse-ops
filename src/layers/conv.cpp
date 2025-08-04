@@ -4,8 +4,8 @@
 RunResult SparseOnnxModel::applyConv(
     const ConvAttr &c,
     const float    *src,
-    uint32_t        rows_in,
-    uint32_t        C,
+    uint32_t        features_in,
+    uint32_t        B,
     float*            out_buf
 ) const {
     // Unpack dims & hyper-params
@@ -18,8 +18,8 @@ RunResult SparseOnnxModel::applyConv(
     int sH = c.strides[0], sW = c.strides[1];
     int dH = c.dilations[0], dW = c.dilations[1];
 
-    // Infer input H×W from rows_in = Cin * H_in * W_in
-    int H_in = rows_in / Cin;
+    // Infer input H×W from features_in = Cin * H_in * W_in
+    int H_in = features_in / Cin;
     int W_in = H_in;  // assume square for simplicity
 
     // Compute output spatial dims
@@ -30,7 +30,7 @@ RunResult SparseOnnxModel::applyConv(
     uint32_t patch_size   = Cin * kH * kW;            // N cols of weight
     uint32_t num_patches  = H_out * W_out;            // output “columns” per sample
     uint32_t rows_out     = Cout * num_patches;       // total rows in output feature map
-    size_t   total_elems  = size_t(rows_out) * C;     // for all batch
+    size_t   total_elems  = size_t(rows_out) * B;     // for all batch
 
     // Allocate output buffer
     void* raw_out = nullptr;
@@ -44,8 +44,8 @@ RunResult SparseOnnxModel::applyConv(
     col_buf.resize(size_t(patch_size) * num_patches);
 
     // For each example in the batch
-    for (uint32_t b = 0; b < C; ++b) {
-        const float* src_b = src + size_t(b) * rows_in;
+    for (uint32_t b = 0; b < B; ++b) {
+        const float* src_b = src + size_t(b) * features_in;
         float*       dst_b = dst_all + size_t(b) * rows_out;
 
         // Build im2col: each patch is a column
@@ -83,5 +83,5 @@ RunResult SparseOnnxModel::applyConv(
         );
     }
 
-    return { dst_all, rows_out };
+    return { dst_all, rows_out, true };
 }

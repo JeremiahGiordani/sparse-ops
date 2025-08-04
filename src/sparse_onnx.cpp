@@ -86,7 +86,8 @@ SparseOnnxModel::SparseOnnxModel(const std::string &onnx_path) {
         auto &shape = vi.type().tensor_type().shape();
         if (shape.dim_size()!=2 || !shape.dim(0).has_dim_value())
             throw std::runtime_error("Expected static 2D input");
-        batch_dim_ = shape.dim(0).dim_value();
+        batch_dim_    = static_cast<uint32_t>(shape.dim(0).dim_value());
+        in_features_  = static_cast<uint32_t>(shape.dim(1).dim_value());
         break;
     }
 
