@@ -145,6 +145,107 @@ PYBIND11_MODULE(sparseops_backend, m)
               • Returns Y as an m×C float32 NumPy array
         )pbdoc");
 
+    m.def("ellpack_matmul_outer",
+        [](const Ellpack &E,
+           py::array_t<float, py::array::c_style | py::array::forcecast> X_arr,
+           py::array_t<float, py::array::c_style | py::array::forcecast> bias_arr) {
+            auto buf_X    = X_arr.request();
+            auto buf_bias = bias_arr.request();
+            if (buf_X.ndim != 2) {
+                throw std::runtime_error("X must be 2D (n × C)");
+            }
+            if ((uint32_t)buf_X.shape[1] != E.m) {
+                throw std::runtime_error("Input row count must equal E.m");
+            }
+            if ((uint32_t)buf_bias.size != E.n) {
+                throw std::runtime_error("Bias length must equal E.n");
+            }
+
+            uint32_t C = static_cast<uint32_t>(buf_X.shape[0]);
+            std::array<ssize_t,2> shape = { (ssize_t)E.n, (ssize_t)C };
+            py::array_t<float> Y_arr(shape);
+            auto buf_Y = Y_arr.request();
+
+            ellpack_matmul_outer(
+                E,
+                static_cast<const float*>(buf_X.ptr),
+                C,
+                static_cast<const float*>(buf_bias.ptr),
+                static_cast<float*>(buf_Y.ptr)
+            );
+            return Y_arr;
+        },
+        R"pbdoc(
+            Multithreaded bilinear-diagonal mat-mul (ELLPACK format)
+
+            Computes Y = E × X + bias, where:
+              • E is an ELLPACK (m×n) matrix
+              • X is an n×C float32 array
+              • bias is length-m float32 vector (added to each column)
+              • Returns Y as an m×C float32 NumPy array
+        )pbdoc");
+
+    // m.def("ellpack_matmul_outer",
+    //     [](const Ellpack &E,
+    //     py::array_t<float, py::array::c_style | py::array::forcecast> X_arr,
+    //     py::array_t<float, py::array::c_style | py::array::forcecast> bias_arr) {
+    //         // 1) Validate X: must be 2D (batch × features)
+    //         auto bufX = X_arr.request();
+    //         if (bufX.ndim != 2) {
+    //             throw std::runtime_error("X must be 2D (batch × features)");
+    //         }
+    //         uint32_t B = static_cast<uint32_t>(bufX.shape[0]);
+    //         uint32_t N = static_cast<uint32_t>(bufX.shape[1]);
+    //         if (N != E.m) {
+    //             throw std::runtime_error(
+    //                 "X.shape[1] (features) must equal E.m");
+    //         }
+    //         const float* X_ptr = static_cast<const float*>(bufX.ptr);
+
+    //         // 2) Validate bias: must be 1D of length E.n
+    //         auto bufB = bias_arr.request();
+    //         if (bufB.ndim != 1 ||
+    //             static_cast<uint32_t>(bufB.shape[0]) != E.n)
+    //         {
+    //             throw std::runtime_error(
+    //                 "bias must be 1D of length E.n");
+    //         }
+    //         const float* bias_ptr = static_cast<const float*>(bufB.ptr);
+
+    //         // 3) Allocate output Y
+    //         uint32_t M = E.m;
+    //         py::array_t<float> Y_arr({ (ssize_t)M, (ssize_t)B });
+    //         auto bufY = Y_arr.request();
+    //         float* Y_ptr = static_cast<float*>(bufY.ptr);
+
+    //         // 4) Call the batched outer‐product kernel
+    //         ellpack_matmul_outer(
+    //             E,
+    //             X_ptr,
+    //             B,
+    //             bias_ptr,
+    //             Y_ptr
+    //         );
+
+    //         return Y_arr;
+    //     },
+    //     R"pbdoc(
+    //     Batched sparse mat‐mul with ELLPACK via outer‐product.
+
+    //     Computes, for a batch of size B:
+    //         Y[b,i] = sum_j E(i,j) * X[b,j]  + bias[i]
+
+    //     Arguments:
+    //     • E           : an ELLPACK handle for an (n×m) weight matrix  
+    //     • X_arr       : float32 array of shape (B, n)  
+    //     • bias_arr    : float32 array of length m  
+
+    //     Returns:
+    //     • Y_arr       : float32 array of shape (B, m)
+    //     )pbdoc"
+    // );
+
+
     // — Sparse ONNX model —
     py::class_<SparseOnnxModel>(m, "SparseOnnxModel")
         .def(py::init<const std::string&>(),

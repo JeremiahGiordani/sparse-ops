@@ -20,6 +20,15 @@ void ellpack_matmul_fused(
     float*            Y
 );
 
+template<bool USE_MASK, bool FUSE_RELU>
+void ellpack_matmul_fused_outer(
+    const Ellpack&    ET,
+    const float*      X,
+    uint32_t          C,
+    const float*      bias,
+    float*            Y
+);
+
 inline void ellpack_matmul(
     const Ellpack &E,
     const float*   X,
@@ -39,5 +48,27 @@ inline void ellpack_matmul(
     } else {
         // scalar fallback
         ellpack_matmul_fused<true, false>(E, X, C, bias, Y);
+    }
+}
+
+inline void ellpack_matmul_outer(
+    const Ellpack &ET,
+    const float*   X,
+    uint32_t       C,
+    const float*   bias,
+    float*         Y)
+{
+    bool use_avx512   = supports_avx512();
+    uint32_t simd_w   = use_avx512 ? 16u : 8u;
+    bool use_mask     = (C % simd_w) != 0;
+
+    if (use_avx512) {
+        if (use_mask)
+            ellpack_matmul_fused_outer<true,  false>(ET, X, C, bias, Y);
+        else
+            ellpack_matmul_fused_outer<false, false>(ET, X, C, bias, Y);
+    } else {
+        // scalar fallback
+        ellpack_matmul_fused_outer<true, false>(ET, X, C, bias, Y);
     }
 }
