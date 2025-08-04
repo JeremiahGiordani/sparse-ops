@@ -71,10 +71,13 @@ PYBIND11_MODULE(sparseops_backend, m)
             };
             return py::array_t<uint32_t>(shape, strides, E.idx.data());
         })
-        .def_property_readonly("nnz", [](const Ellpack &E) {
-            std::array<ssize_t, 1> shape   = { (ssize_t)E.m };
-            std::array<ssize_t, 1> strides = { sizeof(uint32_t) };
-            return py::array_t<uint32_t>(shape, strides, E.nnz.data());
+        .def_property_readonly("Xt", [](const Ellpack &E) {
+            std::array<ssize_t,2> shape   = { (ssize_t)E.m, (ssize_t)E.r };
+            std::array<ssize_t,2> strides = {
+                sizeof(float) * E.r,
+                sizeof(float)
+            };
+            return py::array_t<float>(shape, strides, E.Xt.ptr);
         });
 
     // — API surface —
@@ -141,129 +144,6 @@ PYBIND11_MODULE(sparseops_backend, m)
               • bias is length-m float32 vector (added to each column)
               • Returns Y as an m×C float32 NumPy array
         )pbdoc");
-
-    m.def("ellpack_matmul_fortran",
-        [](const Ellpack &E,
-           py::array_t<float, py::array::f_style | py::array::forcecast> X_arr,
-           py::array_t<float, py::array::c_style | py::array::forcecast> bias_arr) {
-            auto buf_X    = X_arr.request();
-            auto buf_bias = bias_arr.request();
-            if (buf_X.ndim != 2) {
-                throw std::runtime_error("X must be 2D (n × C)");
-            }
-            if ((uint32_t)buf_X.shape[1] != E.n) {
-                throw std::runtime_error("Input row count must equal E.n");
-            }
-            if ((uint32_t)buf_bias.size != E.m) {
-                throw std::runtime_error("Bias length must equal E.m");
-            }
-
-            uint32_t C = static_cast<uint32_t>(buf_X.shape[0]);
-            std::array<ssize_t,2> shape = { (ssize_t)E.m, (ssize_t)C };
-            py::array_t<float> Y_arr(shape);
-            auto buf_Y = Y_arr.request();
-
-            ellpack_matmul(
-                E,
-                static_cast<const float*>(buf_X.ptr),
-                C,
-                static_cast<const float*>(buf_bias.ptr),
-                static_cast<float*>(buf_Y.ptr)
-            );
-            return Y_arr;
-        },
-        R"pbdoc(
-            Multithreaded bilinear-diagonal mat-mul (ELLPACK format)
-
-            Computes Y = E × X + bias, where:
-              • E is an ELLPACK (m×n) matrix
-              • X is an n×C float32 array
-              • bias is length-m float32 vector (added to each column)
-              • Returns Y as an m×C float32 NumPy array
-        )pbdoc");
-
-    m.def("ellpack_matmul_outer",
-        [](const Ellpack &E,
-           py::array_t<float, py::array::c_style | py::array::forcecast> X_arr,
-           py::array_t<float, py::array::c_style | py::array::forcecast> bias_arr) {
-            auto buf_X    = X_arr.request();
-            auto buf_bias = bias_arr.request();
-            if (buf_X.ndim != 2) {
-                throw std::runtime_error("X must be 2D (n × C)");
-            }
-            if ((uint32_t)buf_X.shape[1] != E.n) {
-                throw std::runtime_error("Input row count must equal E.m");
-            }
-            if ((uint32_t)buf_bias.size != E.m) {
-                throw std::runtime_error("Bias length must equal E.n");
-            }
-
-            uint32_t C = static_cast<uint32_t>(buf_X.shape[0]);
-            std::array<ssize_t,2> shape = { (ssize_t)E.m, (ssize_t)C };
-            py::array_t<float> Y_arr(shape);
-            auto buf_Y = Y_arr.request();
-
-            ellpack_matmul_outer(
-                E,
-                static_cast<const float*>(buf_X.ptr),
-                C,
-                static_cast<const float*>(buf_bias.ptr),
-                static_cast<float*>(buf_Y.ptr)
-            );
-            return Y_arr;
-        },
-        R"pbdoc(
-            Multithreaded bilinear-diagonal mat-mul (ELLPACK format)
-
-            Computes Y = E × X + bias, where:
-              • E is an ELLPACK (m×n) matrix
-              • X is an n×C float32 array
-              • bias is length-m float32 vector (added to each column)
-              • Returns Y as an m×C float32 NumPy array
-        )pbdoc");
-
-    m.def("ellpack_matmul_tiled",
-        [](const Ellpack &E,
-           py::array_t<float, py::array::c_style | py::array::forcecast> X_arr,
-           py::array_t<float, py::array::c_style | py::array::forcecast> bias_arr) {
-            auto buf_X    = X_arr.request();
-            auto buf_bias = bias_arr.request();
-            if (buf_X.ndim != 2) {
-                throw std::runtime_error("X must be 2D (n × C)");
-            }
-            // if ((uint32_t)buf_X.shape[1] != E.m) {
-            //     throw std::runtime_error("Input row count must equal E.m");
-            // }
-            // if ((uint32_t)buf_bias.size != E.n) {
-            //     throw std::runtime_error("Bias length must equal E.n");
-            // }
-
-            uint32_t C = static_cast<uint32_t>(buf_X.shape[0]);
-            std::array<ssize_t,2> shape = { (ssize_t)E.n, (ssize_t)C };
-            py::array_t<float> Y_arr(shape);
-            auto buf_Y = Y_arr.request();
-
-            ellpack_matmul_tiled(
-                E,
-                static_cast<const float*>(buf_X.ptr),
-                C,
-                static_cast<const float*>(buf_bias.ptr),
-                static_cast<float*>(buf_Y.ptr)
-            );
-            return Y_arr;
-        },
-        R"pbdoc(
-            Multithreaded bilinear-diagonal mat-mul (ELLPACK format)
-
-            Computes Y = E × X + bias, where:
-              • E is an ELLPACK (m×n) matrix
-              • X is an n×C float32 array
-              • bias is length-m float32 vector (added to each column)
-              • Returns Y as an m×C float32 NumPy array
-        )pbdoc");
-
-
-
 
     // — Sparse ONNX model —
     py::class_<SparseOnnxModel>(m, "SparseOnnxModel")

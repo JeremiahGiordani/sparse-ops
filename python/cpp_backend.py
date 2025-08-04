@@ -29,46 +29,9 @@ def matmul(E: sparseops_backend.Ellpack, X: np.ndarray, bias: np.ndarray) -> np.
     Bilinear diagonal matrix multiplication using the C++ backend.
     Args:
         E: Ellpack object (m, n)
-        X: (n, C) np.ndarray
-        bias: (m,) np.ndarray
+        X: XtDense object OR (n,) np.ndarray
+        bias: (m,) torch.Tensor
     Returns:
-        (m,C) np.ndarray
+        (m,) torch.Tensor
     """
     return sparseops_backend.ellpack_matmul(E, X, bias)
-
-def matmul_outer(E: sparseops_backend.Ellpack, X: np.ndarray, bias: np.ndarray) -> np.ndarray:
-    """
-    Bilinear diagonal outer matrix multiplication using the C++ backend.
-    Args:
-        E: Ellpack object (n, m)
-        X: (B,n) np.ndarray
-        bias: (m,) np.ndarray
-    Returns:
-        (m,C) np.ndarray
-    """
-    return sparseops_backend.ellpack_matmul_outer(E, X, bias)
-
-
-def matmul_outer_dis(E: sparseops_backend.Ellpack, X: np.ndarray, bias: np.ndarray) -> np.ndarray:
-    """
-    Bilinear diagonal outer matrix multiplication using the C++ backend.
-    Args:
-        E: Ellpack object (n, m)
-        X: (B,n) np.ndarray
-        bias: (m,) np.ndarray
-    Returns:
-        (m,C) np.ndarray
-    """
-    return sparseops_backend.ellpack_matmul_tiled(E, X, bias)
-
-def matmul_fortran(E: sparseops_backend.Ellpack, X: np.ndarray, bias: np.ndarray) -> np.ndarray:
-    """
-    Bilinear diagonal outer matrix multiplication using the C++ backend.
-    Args:
-        E: Ellpack object (n, m)
-        X: (B,n) np.ndarray
-        bias: (m,) np.ndarray
-    Returns:
-        (m,C) np.ndarray
-    """
-    return sparseops_backend.ellpack_matmul_fortran(E, X, bias)
