@@ -151,15 +151,15 @@ PYBIND11_MODULE(sparseops_backend, m)
             if (buf_X.ndim != 2) {
                 throw std::runtime_error("X must be 2D (n × C)");
             }
-            if ((uint32_t)buf_X.shape[1] != E.m) {
+            if ((uint32_t)buf_X.shape[1] != E.n) {
                 throw std::runtime_error("Input row count must equal E.m");
             }
-            if ((uint32_t)buf_bias.size != E.n) {
+            if ((uint32_t)buf_bias.size != E.m) {
                 throw std::runtime_error("Bias length must equal E.n");
             }
 
             uint32_t C = static_cast<uint32_t>(buf_X.shape[0]);
-            std::array<ssize_t,2> shape = { (ssize_t)E.n, (ssize_t)C };
+            std::array<ssize_t,2> shape = { (ssize_t)E.m, (ssize_t)C };
             py::array_t<float> Y_arr(shape);
             auto buf_Y = Y_arr.request();
 

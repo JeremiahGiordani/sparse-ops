@@ -23,7 +23,7 @@ void ellpack_matmul_fused(
 void ellpack_matmul_outer(
     const Ellpack&    E,
     const float*      X,
-    uint32_t          B,
+    uint32_t          C,
     const float*      bias,
     float*            Y
 );
