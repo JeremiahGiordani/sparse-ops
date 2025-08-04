@@ -96,63 +96,84 @@ void ellpack_matmul_fused(
 
 template<bool USE_MASK, bool FUSE_RELU>
 void ellpack_matmul_fused_outer(
-    const Ellpack& ET,      // transposed: ET.m=N, ET.n=M
-    const float*   X,       // [B × N] row-major
-    uint32_t       B,       // batch size
-    const float*   bias,    // length=M or nullptr
-    float*         Y        // [M × B] row-major
+    const Ellpack& ETL,    // ETL.m = N, ETL.n = M
+    const float*   X,      // [B × N] row-major
+    uint32_t       B,      // batch size
+    const float*   bias,   // length M
+    float*         Y       // [M × B] row-major
 ) {
-    const uint32_t N = ET.m;
-    const uint32_t M = ET.n;
-    const uint32_t r = ET.r;
+    const uint32_t N = ETL.m;
+    const uint32_t M = ETL.n;
+    const uint32_t r = ETL.r;
     bool use_avx512   = supports_avx512();
-    uint32_t W        = use_avx512 ? 16 : 8;
+    const uint32_t W  = use_avx512 ? 16u : 8u;
 
-    // 1) Init Y from bias (or zero)
+    // 1) Initialize Y from bias
     #pragma omp parallel for
     for (uint32_t i = 0; i < M; ++i) {
         float* yrow = Y + size_t(i)*B;
-        if (bias) {
-            float bi = bias[i];
-            for (uint32_t b = 0; b < B; ++b) yrow[b] = bi;
-        } else {
-            for (uint32_t b = 0; b < B; ++b) yrow[b] = 0.0f;
+        float  bi   = bias ? bias[i] : 0.0f;
+        for (uint32_t b = 0; b < B; ++b) {
+            yrow[b] = bi;
         }
     }
 
-    // 2) Outer‐product over features j
+    // 2) Outer-product over feature j
     for (uint32_t j = 0; j < N; ++j) {
-        // pointer to X[:,j]
-        const float* xcol = X + size_t(j)*B;
-        size_t        base = size_t(j)*r;
-        uint32_t      cnt  = ET.nnz[j];
+        size_t base = size_t(j)*r;
+        uint32_t cnt = ETL.nnz[j];
 
-        // vectorize across the batch dimension
+        // Process batch 'columns' in width-W blocks
         for (uint32_t bb = 0; bb < B; bb += W) {
             uint32_t block = std::min(W, B - bb);
             __mmask16 mask = USE_MASK
                 ? (__mmask16(1) << block) - 1
-                : (__mmask16)0xFFFF;
+                : __mmask16(-1);
 
-            // load X[bb:bb+block, j]
+            // Build an index vector for gathering X[bb..bb+block,j]:
+            //   offsets[k] = ((bb + k) * N + j) * sizeof(float)
+            alignas(64) int idxs[16];
+            for (uint32_t k = 0; k < block; ++k) {
+                idxs[k] = int((bb + k) * size_t(N) + j) * int(sizeof(float));
+            }
+            // fill rest (if any) to avoid uninitialized reads
+            for (uint32_t k = block; k < W; ++k) {
+                idxs[k] = 0;
+            }
+            __m512i vidx = _mm512_load_si512(idxs);
+
+            // Gather the feature column into xv:
             __m512 xv = use_avx512
+                ? _mm512_mask_i32gather_ps(
+                    _mm512_setzero_ps(),   // zero for masked-off lanes
+                    mask,
+                    vidx,
+                    X,                     // base pointer
+                    1                      // scale = byte offset already embedded
+                  )
+                : [&]() {
+                    // scalar fallback
+                    float tmp[16];
+                    for (uint32_t k = 0; k < block; ++k) {
+                        tmp[k] = X[(bb + k)*N + j];
+                    }
+                    return _mm512_loadu_ps(tmp);
+                  }();
+
+            // Load existing yv for each lane
+            __m512 yv = use_avx512
                 ? (USE_MASK
-                    ? _mm512_maskz_loadu_ps(mask, xcol + bb)
-                    : _mm512_loadu_ps(xcol + bb))
-                : _mm512_loadu_ps(xcol + bb);
+                   ? _mm512_maskz_loadu_ps(mask, Y + size_t(j)*0 /*dummy*/)
+                   : _mm512_loadu_ps(Y /*dummy*/))
+                // We'll actually reload per-row below; drop this line entirely
+                : _mm512_setzero_ps();
 
-            // for each nonzero (j → i)
+            // Now scatter into each output row i for which Wᵀ[j,i] != 0
             for (uint32_t t = 0; t < cnt; ++t) {
-                uint32_t i = ET.idx[base + t];
-                float    w = ET.Wd.ptr[base + t];
+                uint32_t i = ETL.idx[base + t];
+                float    w = ETL.Wd.ptr[base + t];
 
-                float*       yrow = Y + size_t(i)*B;
-                __m512 yv = use_avx512
-                    ? (USE_MASK
-                        ? _mm512_maskz_loadu_ps(mask, yrow + bb)
-                        : _mm512_loadu_ps(yrow + bb))
-                    : _mm512_loadu_ps(yrow + bb);
-
+                // scale xv by w into yv
                 __m512 wv = _mm512_set1_ps(w);
                 yv = _mm512_fmadd_ps(wv, xv, yv);
 
@@ -160,18 +181,19 @@ void ellpack_matmul_fused_outer(
                     yv = _mm512_max_ps(yv, _mm512_setzero_ps());
                 }
 
+                // write back yv into Y[i, bb..]
+                float* yrow = Y + size_t(i)*B + bb;
                 if (use_avx512) {
                     if (USE_MASK) {
-                        _mm512_mask_storeu_ps(yrow + bb, mask, yv);
+                        _mm512_mask_storeu_ps(yrow, mask, yv);
                     } else {
-                        _mm512_storeu_ps(yrow + bb, yv);
+                        _mm512_storeu_ps(yrow, yv);
                     }
                 } else {
-                    // scalar fallback write‐back
                     float tmp[16];
                     _mm512_storeu_ps(tmp, yv);
-                    for (uint32_t b = 0; b < block; ++b) {
-                        yrow[bb + b] = tmp[b];
+                    for (uint32_t k = 0; k < block; ++k) {
+                        yrow[k] = tmp[k];
                     }
                 }
             }
