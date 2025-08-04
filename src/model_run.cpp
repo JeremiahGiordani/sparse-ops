@@ -35,7 +35,10 @@ void SparseOnnxModel::run(
             ins .push_back(buf.at(iname));
             in_features.push_back(features_map.at(iname));
         }
-        bool is_final = (L.outputs[0] == output_name_);
+        bool is_final = std::find(
+          L.outputs.begin(),
+          L.outputs.end(),
+          output_name_) != L.outputs.end();
 
         // Dispatch to the appropriate helper
         RunResult R;
