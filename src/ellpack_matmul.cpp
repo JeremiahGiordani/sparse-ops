@@ -6,6 +6,7 @@
 #include <cstdlib>
 #include <algorithm>  // std::fill, std::max
 #include <cstdint>  // uint32_t, uint64_t
+#include <array> 
 
 
 
@@ -173,79 +174,63 @@ void ellpack_matmul_outer(
 
 
 void ellpack_matmul_tiled(
-    const Ellpack &E,       // E.m = N (features), E.n = M (output rows)
-    const float  *X,        // [B × N], row-major
-    uint32_t      B,
-    const float  *bias,     // [M] or nullptr
-    float        *Y         // [M × B], row-major
+    const Ellpack &E,        // this E is *row*→features: E.m = M, E.n = N
+    const float   *X,        // [B × N], row‐major
+    uint32_t       B,
+    const float   *bias,     // [M] or nullptr
+    float         *Y         // [M × B], row‐major
 ) {
-    const uint32_t N        = E.m;
-    const uint32_t M        = E.n;
-    const uint32_t r        = E.r;
-    const bool     use512   = supports_avx512();
-    const uint32_t simd     = use512 ? 16u : 8u;
-    const uint32_t blocks   = (B + simd - 1u) / simd;
-    const uint32_t stride   = blocks * simd;
+    const uint32_t M      = E.m;
+    const uint32_t N      = E.n;
+    const uint32_t r      = E.r;
+    const bool     use512 = supports_avx512();
+    const uint32_t simd   = use512 ? 16u : 8u;
+    const uint32_t blocks = (B + simd - 1) / simd;
 
-    // decide number of threads
+    // build a per‐block index vector for gathers once
+    std::array<int32_t,16> idx32;
+    for (uint32_t j = 0; j < 16; ++j) {
+      idx32[j] = 4 * int32_t(j * N);  
+      // byte‐offset = (b0 + j)*N * sizeof(float), we'll add b0 below
+    }
+
+    // threading
     const char* env = std::getenv("OMP_NUM_THREADS");
     int         nth = env ? std::atoi(env) : omp_get_max_threads();
 
-    // 1) allocate & init a padded temp buffer
-    std::vector<float> Y_tmp(size_t(M) * stride);
+    #pragma omp parallel for num_threads(nth) schedule(static)
     for (uint32_t row = 0; row < M; ++row) {
-        float bi = bias ? bias[row] : 0.0f;
-        float *dst = Y_tmp.data() + size_t(row) * stride;
-        for (uint32_t j = 0; j < stride; ++j) {
-            dst[j] = (j < B ? bi : 0.0f);
-        }
-    }
+      size_t      base = size_t(row) * r;
+      const float bval = bias ? bias[row] : 0.0f;
 
-    // 2) parallel over (block_i, feature_i)
-    #pragma omp parallel for num_threads(nth) collapse(2) schedule(static)
-    for (uint32_t bi = 0; bi < blocks; ++bi) {
-      for (uint32_t feat = 0; feat < N; ++feat) {
-        // gather simd-wide X[:,feat] into a small buffer
-        float xbuf[16];
-        uint32_t base_b = bi * simd;
-        for (uint32_t j = 0; j < simd; ++j) {
-          uint32_t bb = base_b + j;
-          xbuf[j] = (bb < B ? X[bb * N + feat] : 0.0f);
+      for (uint32_t bi = 0; bi < blocks; ++bi) {
+        uint32_t b0        = bi * simd;
+        uint32_t block_sz  = std::min(simd, B - b0);
+        __mmask16 mask     = (__mmask16(1) << block_sz) - 1;
+
+        // start accumulator with bias
+        __m512 acc = _mm512_set1_ps(bval);
+
+        // for each nonzero in this output row
+        for (uint32_t j = 0; j < E.nnz[row]; ++j) {
+            float    w     = E.Wd.ptr[base + j];
+            uint32_t feat  = E.idx [base + j];
+
+
+            // adjust the index vector for this block
+            __m512i indices = _mm512_add_epi32(
+                _mm512_set1_epi32(int32_t(b0) * int32_t(N*4)),
+                _mm512_loadu_si512(idx32.data())
+            );
+            __m512 xv = _mm512_i32gather_ps(indices, X, 1);
+            acc = _mm512_fmadd_ps(_mm512_set1_ps(w), xv, acc);
+
         }
 
-        if (use512) {
-          __m512 xv = _mm512_loadu_ps(xbuf);
-          size_t  row_base = size_t(feat) * r;
-          for (uint32_t nz = 0; nz < E.nnz[feat]; ++nz) {
-            float     w   = E.Wd.ptr[row_base + nz];
-            uint32_t  row = E.idx [row_base + nz];
-            float    *y   = Y_tmp.data() + size_t(row) * stride + base_b;
-            __m512    yv  = _mm512_loadu_ps(y);
-            yv             = _mm512_fmadd_ps(_mm512_set1_ps(w), xv, yv);
-            _mm512_storeu_ps(y, yv);
-          }
-        } else {
-          __m256 xv = _mm256_loadu_ps(xbuf);
-          size_t  row_base = size_t(feat) * r;
-          for (uint32_t nz = 0; nz < E.nnz[feat]; ++nz) {
-            float     w   = E.Wd.ptr[row_base + nz];
-            uint32_t  row = E.idx [row_base + nz];
-            float    *y   = Y_tmp.data() + size_t(row) * stride + base_b;
-            __m256    yv  = _mm256_loadu_ps(y);
-            yv             = _mm256_fmadd_ps(_mm256_set1_ps(w), xv, yv);
-            _mm256_storeu_ps(y, yv);
-          }
-        }
+        // **one** masked store per block
+        float* outp = Y + size_t(row) * B + b0;
+        _mm512_mask_storeu_ps(outp, mask, acc);
       }
-    }
-
-    // 3) copy out only the real B columns per row
-    for (uint32_t row = 0; row < M; ++row) {
-      std::memcpy(
-        Y + size_t(row) * B,
-        Y_tmp.data() + size_t(row) * stride,
-        B * sizeof(float)
-      );
     }
 }
 
