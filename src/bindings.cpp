@@ -167,7 +167,7 @@ PYBIND11_MODULE(sparseops_backend, m)
                 E,
                 static_cast<const float*>(buf_X.ptr),
                 C,
-                nullptr,
+                static_cast<const float*>(buf_bias.ptr),
                 static_cast<float*>(buf_Y.ptr)
             );
             return Y_arr;
