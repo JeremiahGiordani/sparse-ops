@@ -83,11 +83,31 @@ SparseOnnxModel::SparseOnnxModel(const std::string &onnx_path) {
     batch_dim_ = 1;
     for (const auto &vi : graph.input()) {
         if (init_map.count(vi.name())) continue;  // skip constant inputs
-        auto &shape = vi.type().tensor_type().shape();
-        if (shape.dim_size()!=2 || !shape.dim(0).has_dim_value())
-            throw std::runtime_error("Expected static 2D input");
-        batch_dim_    = static_cast<uint32_t>(shape.dim(0).dim_value());
-        in_features_  = static_cast<uint32_t>(shape.dim(1).dim_value());
+        auto &shape_proto = vi.type().tensor_type().shape();
+        input_shape_.resize(shape_proto.dim_size());
+        for (int i = 0; i < shape_proto.dim_size(); ++i) {
+            if (!shape_proto.dim(i).has_dim_value())
+                throw std::runtime_error("Dynamic dims not supported");
+            input_shape_[i] = shape_proto.dim(i).dim_value();
+        }
+        
+        if (input_shape_.size() == 2) {
+            // 2D input: [batch × features]
+            in_features_ = static_cast<uint32_t>(input_shape_[1]);
+        }
+        else if (input_shape_.size() > 2) {
+            // ND input: flatten all but the batch dim
+            uint32_t prod = 1;
+            for (size_t d = 1; d < input_shape_.size(); ++d) {
+                prod *= static_cast<uint32_t>(input_shape_[d]);
+            }
+            in_features_ = prod;
+        }
+        else {
+            throw std::runtime_error("Input tensor must have rank ≥ 2");
+        }
+        batch_dim_ = static_cast<uint32_t>(input_shape_[0]);
+        shape_map_[input_name_] = input_shape_;  // record full shape if you need it later
         break;
     }
 
@@ -101,6 +121,7 @@ SparseOnnxModel::SparseOnnxModel(const std::string &onnx_path) {
     for (size_t idx = 0; idx < graph.node_size(); ++idx) {
         const auto &node = graph.node(idx);
         const auto &op   = node.op_type();
+        const std::string &out = node.output(0);
 
         // ——— Fuse MatMul/Gemm → Relu ———
         if ((op=="MatMul" || op=="Gemm")
@@ -144,6 +165,7 @@ SparseOnnxModel::SparseOnnxModel(const std::string &onnx_path) {
             });
             bias_plans.push_back({ layers_.size()-1, std::move(bdata) });
 
+            shape_map_[graph.node(idx+1).output(0)] = { int(batch_dim_), int(M) };
             ++idx;  // skip the Relu node
             continue;
         }
@@ -178,6 +200,8 @@ SparseOnnxModel::SparseOnnxModel(const std::string &onnx_path) {
                 { node.output(0) }
             });
             bias_plans.push_back({ layers_.size()-1, std::move(bdata) });
+
+            shape_map_[out] = { int(batch_dim_), int(M) };
             continue;
         }
 
@@ -192,6 +216,7 @@ SparseOnnxModel::SparseOnnxModel(const std::string &onnx_path) {
                 /* single output */
                 { node.output(0) }
             });
+            shape_map_[out] = shape_map_.at(node.input(0));
             continue;
         }
 
@@ -209,6 +234,7 @@ SparseOnnxModel::SparseOnnxModel(const std::string &onnx_path) {
                 /* activation output */
                 { node.output(0) }
             });
+            shape_map_[out] = shape_map_.at(node.input(0));
             continue;
         }
 
@@ -236,6 +262,27 @@ SparseOnnxModel::SparseOnnxModel(const std::string &onnx_path) {
                 /* pooling output */
                 { node.output(0) }
             });
+            if (p.is_global) {
+                auto in_shape = shape_map_.at(node.input(0));
+                shape_map_[out] = { in_shape[0], in_shape[1] };
+            } else {
+                auto in_shape = shape_map_.at(node.input(0));  // {B, C, H, W}
+                int B      = in_shape[0];
+                int C      = in_shape[1];
+                int H      = in_shape[2];
+                int W      = in_shape[3];
+                int kH     = p.kernel_shape[0];
+                int kW     = p.kernel_shape[1];
+                int sH     = p.strides[0];
+                int sW     = p.strides[1];
+                int padH0  = p.pads[0], padH1 = p.pads[2];
+                int padW0  = p.pads[1], padW1 = p.pads[3];
+
+                int H_out = (H + padH0 + padH1 - kH) / sH + 1;
+                int W_out = (W + padW0 + padW1 - kW) / sW + 1;
+
+                shape_map_[out] = { B, C, H_out, W_out };
+            }
             continue;
         }
 
@@ -254,6 +301,12 @@ SparseOnnxModel::SparseOnnxModel(const std::string &onnx_path) {
                 /* flatten output */
                 { node.output(0) }
             });
+            auto in_shape = shape_map_.at(node.input(0));
+            std::vector<int> flat = { in_shape[0] }; 
+            int prod = 1;
+            for (int i = axis; i < in_shape.size(); ++i) prod *= in_shape[i];
+            flat.push_back(prod);
+            shape_map_[out] = flat;
             continue;
         }
 
@@ -333,16 +386,74 @@ SparseOnnxModel::SparseOnnxModel(const std::string &onnx_path) {
                 }
             }
 
+            auto in_shape = shape_map_.at(node.input(0));
+            // Expect { B, Cin, H_in, W_in }
+            if (in_shape.size() != 4) {
+                throw std::runtime_error("Conv input must be 4D");
+            }
+            int H_in = in_shape[2];
+            int W_in = in_shape[3];
+
+            // Copy into the attr
+            c.H_in = H_in;
+            c.W_in = W_in;
+
+            int H_out = (H_in + c.pads[0] + c.pads[2]
+                        - c.dilations[0] * (kH - 1) - 1)
+                    / c.strides[0] + 1;
+            int W_out = (W_in + c.pads[1] + c.pads[3]
+                        - c.dilations[1] * (kW - 1) - 1)
+                    / c.strides[1] + 1;
+
+            c.H_out = H_out;
+            c.W_out = W_out;
+
+            // Pre-allocate the index map: each of the H_out*W_out patches
+            // has Cin*kH*kW elements
+            size_t patch_size  = size_t(Cin) * kH * kW;
+            size_t num_patches = size_t(H_out) * W_out;
+            c.patch_indices.resize(patch_size * num_patches);
+
+            // Fill it just once
+            size_t idx = 0;
+            for (int ph = 0; ph < H_out; ++ph) {
+                int base_h = ph * c.strides[0] - c.pads[0];
+                for (int pw = 0; pw < W_out; ++pw) {
+                    int base_w = pw * c.strides[1] - c.pads[1];
+                    // for each channel + kernel cell
+                    for (int ic = 0; ic < Cin; ++ic) {
+                        size_t channel_off = size_t(ic) * H_in * W_in;
+                        for (int kh = 0; kh < kH; ++kh) {
+                            int ih = base_h + kh * c.dilations[0];
+                            for (int kw = 0; kw < kW; ++kw) {
+                                int iw = base_w + kw * c.dilations[1];
+                                size_t offset = 0;
+                                if ((unsigned)ih < (unsigned)H_in &&
+                                    (unsigned)iw < (unsigned)W_in) {
+                                    offset = channel_off
+                                        + size_t(ih) * W_in
+                                        + size_t(iw);
+                                }
+                                c.patch_indices[idx++] = offset;
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Finally, record the output shape for downstream layers:
+            // { B, Cout, H_out, W_out }
+            shape_map_[ node.output(0) ] = { batch_dim_, Cout, H_out, W_out };
+
+            // 7) Push the Conv layer as before
             layers_.push_back({
                 LayerType::Conv,
                 LayerOp::Conv,
                 std::move(c),
-                /* inputs  */ { node.input(0) },
-                /* outputs */ { node.output(0) }
+                { node.input(0) },
+                { node.output(0) }
             });
-
-            // 7) Schedule its bias for packing
-            bias_plans.push_back({ layers_.size()-1, std::move(bias_vec) });
+            bias_plans.push_back({ layers_.size() - 1, std::move(bias_vec) });
 
             continue;
         }

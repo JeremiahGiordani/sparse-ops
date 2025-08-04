@@ -60,6 +60,9 @@ struct ConvAttr {
     std::array<int,2>    strides; // {sH, sW}
     std::array<int,2>    dilations; // {dH, dW}
     int                  group;
+    int                  H_in, W_in;    // spatial dims of the *input*
+    int                  H_out, W_out;  // computed from pads/strides
+    std::vector<size_t>  patch_indices; // length = Cin*kH*kW * (H_out*W_out)
 };
 
 struct PoolAttr {
@@ -127,6 +130,11 @@ private:
     std::unique_ptr<float[]>                      bias_data_;   ///< All biases packed contiguously
     uint32_t                                      batch_dim_;   ///< Current batch size
     uint32_t                                      in_features_; ///< Input feature size
+    std::vector<int> input_shape_; 
+    std::unordered_map<std::string, std::vector<int>> shape_map_;
+    mutable std::unique_ptr<float[]>   flatten_buf_;   // only for the very first flatten
+    mutable bool                       flattened_ = false;
+
 
     uint32_t                                      max_rows_;    ///< Max rows (m) across all MatMul layers
     uint32_t                                      output_rows_; ///< Rows of the final (last MatMul) layer
@@ -145,5 +153,5 @@ private:
     RunResult applyMaxPool           (const PoolAttr&     , const float* src, uint32_t features, uint32_t B, float* out_buf = nullptr) const;
     RunResult applyGlobalAveragePool (const PoolAttr&     , const float* src, uint32_t features, uint32_t B, float* out_buf = nullptr) const;
     RunResult applyFlatten           (const FlattenAttr&  , const float* src, uint32_t features, uint32_t B, float* out_buf = nullptr) const;
-    RunResult applyConv              (const ConvAttr&     , const float* src, uint32_t features_in, uint32_t B, float* out_buf = nullptr) const;
+    RunResult applyConv              (const ConvAttr&     , const float* src, uint32_t B) const;
 };
