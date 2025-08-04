@@ -59,4 +59,4 @@ def matmul_outer_dis(E: sparseops_backend.Ellpack, X: np.ndarray, bias: np.ndarr
     Returns:
         (m,C) np.ndarray
     """
-    return sparseops_backend.ellpack_matmul_outer_dis(E, X, bias)
+    return sparseops_backend.ellpack_matmul_tiled(E, X, bias)

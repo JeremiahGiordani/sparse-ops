@@ -172,63 +172,81 @@ void ellpack_matmul_outer(
 }
 
 
-void ellpack_matmul_outer_dis(
-    const Ellpack& E,        // E.m = N, E.r = max nnz per row
-    const float* X,          // [B × N], row-major
-    uint32_t B,
-    const float* bias,       // [M]
-    float* Y                 // [M × B], row-major (M = max(E.idx) + 1)
+void ellpack_matmul_tiled(
+    const Ellpack &E,       // E.m = N (features), E.n = M (output rows)
+    const float  *X,        // [B × N], row-major
+    uint32_t      B,
+    const float  *bias,     // [M] or nullptr
+    float        *Y         // [M × B], row-major
 ) {
-    const bool use_avx512 = supports_avx512();
-    const uint32_t simd_width = use_avx512 ? 16u : 8u;
-    const uint32_t N = E.m;
-    const uint32_t r = E.r;
-    const uint32_t M = E.n;
+    const uint32_t N        = E.m;
+    const uint32_t M        = E.n;
+    const uint32_t r        = E.r;
+    const bool     use512   = supports_avx512();
+    const uint32_t simd     = use512 ? 16u : 8u;
+    const uint32_t blocks   = (B + simd - 1u) / simd;
+    const uint32_t stride   = blocks * simd;
 
+    // decide number of threads
     const char* env = std::getenv("OMP_NUM_THREADS");
-    int nth = env ? std::atoi(env) : omp_get_max_threads();
+    int         nth = env ? std::atoi(env) : omp_get_max_threads();
 
-    std::vector<float> Y_tmp(M * B, 0.0f);
-
-    // 2. Initialize temporary buffer with bias or zero
-    for (uint32_t i = 0; i < M; ++i) {
-        float* yrow = Y_tmp.data() + size_t(i) * B;
-        float bi = bias ? bias[i] : 0.0f;
-        for (uint32_t b = 0; b < B; ++b) {
-            yrow[b] = bi;
+    // 1) allocate & init a padded temp buffer
+    std::vector<float> Y_tmp(size_t(M) * stride);
+    for (uint32_t row = 0; row < M; ++row) {
+        float bi = bias ? bias[row] : 0.0f;
+        float *dst = Y_tmp.data() + size_t(row) * stride;
+        for (uint32_t j = 0; j < stride; ++j) {
+            dst[j] = (j < B ? bi : 0.0f);
         }
     }
 
-    #pragma omp parallel for num_threads(nth) schedule(static)
-    for (uint32_t i = 0; i < N; ++i) { // i is the "column" in original dense mat
-        const uint32_t count = E.nnz[i];
-        const size_t base = size_t(i) * r;
-
-        for (uint32_t b = 0; b < B; b += simd_width) {
-            uint32_t block_size = std::min(simd_width, B - b);
-            __mmask16 mask = (__mmask16(1) << block_size) - 1;
-
-            // Load 16 values from column i of X (i-th feature across batch)
-            float xblock[simd_width] = {0};
-            for (uint32_t j = 0; j < block_size; ++j) {
-                xblock[j] = X[(b + j) * N + i];  // Access X[b+j][i]
-            }
-            __m512 xv = _mm512_maskz_loadu_ps(mask, xblock);
-
-            // For each nonzero in this row of E
-            for (uint32_t j = 0; j < count; ++j) {
-                float wij = E.Wd.ptr[base + j];
-                uint32_t row_idx = E.idx[base + j]; // row in Y to update
-
-                float* yrow = Y_tmp.data() + size_t(row_idx) * B + b;
-                __m512 yv = _mm512_maskz_loadu_ps(mask, yrow);
-                __m512 wv = _mm512_set1_ps(wij);
-                __m512 out = _mm512_fmadd_ps(wv, xv, yv);  // out = wv * xv + yv
-                _mm512_mask_storeu_ps(yrow, mask, out);
-            }
+    // 2) parallel over (block_i, feature_i)
+    #pragma omp parallel for num_threads(nth) collapse(2) schedule(static)
+    for (uint32_t bi = 0; bi < blocks; ++bi) {
+      for (uint32_t feat = 0; feat < N; ++feat) {
+        // gather simd-wide X[:,feat] into a small buffer
+        float xbuf[16];
+        uint32_t base_b = bi * simd;
+        for (uint32_t j = 0; j < simd; ++j) {
+          uint32_t bb = base_b + j;
+          xbuf[j] = (bb < B ? X[bb * N + feat] : 0.0f);
         }
+
+        if (use512) {
+          __m512 xv = _mm512_loadu_ps(xbuf);
+          size_t  row_base = size_t(feat) * r;
+          for (uint32_t nz = 0; nz < E.nnz[feat]; ++nz) {
+            float     w   = E.Wd.ptr[row_base + nz];
+            uint32_t  row = E.idx [row_base + nz];
+            float    *y   = Y_tmp.data() + size_t(row) * stride + base_b;
+            __m512    yv  = _mm512_loadu_ps(y);
+            yv             = _mm512_fmadd_ps(_mm512_set1_ps(w), xv, yv);
+            _mm512_storeu_ps(y, yv);
+          }
+        } else {
+          __m256 xv = _mm256_loadu_ps(xbuf);
+          size_t  row_base = size_t(feat) * r;
+          for (uint32_t nz = 0; nz < E.nnz[feat]; ++nz) {
+            float     w   = E.Wd.ptr[row_base + nz];
+            uint32_t  row = E.idx [row_base + nz];
+            float    *y   = Y_tmp.data() + size_t(row) * stride + base_b;
+            __m256    yv  = _mm256_loadu_ps(y);
+            yv             = _mm256_fmadd_ps(_mm256_set1_ps(w), xv, yv);
+            _mm256_storeu_ps(y, yv);
+          }
+        }
+      }
     }
-    std::memcpy(Y, Y_tmp.data(), sizeof(float) * M * B);
+
+    // 3) copy out only the real B columns per row
+    for (uint32_t row = 0; row < M; ++row) {
+      std::memcpy(
+        Y + size_t(row) * B,
+        Y_tmp.data() + size_t(row) * stride,
+        B * sizeof(float)
+      );
+    }
 }
 
 

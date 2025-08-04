@@ -182,7 +182,7 @@ PYBIND11_MODULE(sparseops_backend, m)
               • Returns Y as an m×C float32 NumPy array
         )pbdoc");
 
-    m.def("ellpack_matmul_outer_dis",
+    m.def("ellpack_matmul_tiled",
         [](const Ellpack &E,
            py::array_t<float, py::array::c_style | py::array::forcecast> X_arr,
            py::array_t<float, py::array::c_style | py::array::forcecast> bias_arr) {
@@ -203,7 +203,7 @@ PYBIND11_MODULE(sparseops_backend, m)
             py::array_t<float> Y_arr(shape);
             auto buf_Y = Y_arr.request();
 
-            ellpack_matmul_outer_dis(
+            ellpack_matmul_tiled(
                 E,
                 static_cast<const float*>(buf_X.ptr),
                 C,

@@ -28,7 +28,7 @@ void ellpack_matmul_outer(
     float*            Y
 );
 
-void ellpack_matmul_outer_dis(
+void ellpack_matmul_tiled(
     const Ellpack&    E,
     const float*      X,
     uint32_t          C,
