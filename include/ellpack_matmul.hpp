@@ -28,6 +28,14 @@ void ellpack_matmul_outer(
     float*            Y
 );
 
+void ellpack_matmul_outer_dis(
+    const Ellpack&    E,
+    const float*      X,
+    uint32_t          C,
+    const float*      bias,
+    float*            Y
+);
+
 inline void ellpack_matmul(
     const Ellpack &E,
     const float*   X,

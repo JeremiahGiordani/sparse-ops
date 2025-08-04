@@ -47,3 +47,16 @@ def matmul_outer(E: sparseops_backend.Ellpack, X: np.ndarray, bias: np.ndarray) 
         (m,C) np.ndarray
     """
     return sparseops_backend.ellpack_matmul_outer(E, X, bias)
+
+
+def matmul_outer_dis(E: sparseops_backend.Ellpack, X: np.ndarray, bias: np.ndarray) -> np.ndarray:
+    """
+    Bilinear diagonal outer matrix multiplication using the C++ backend.
+    Args:
+        E: Ellpack object (n, m)
+        X: (B,n) np.ndarray
+        bias: (m,) np.ndarray
+    Returns:
+        (m,C) np.ndarray
+    """
+    return sparseops_backend.ellpack_matmul_outer_dis(E, X, bias)
