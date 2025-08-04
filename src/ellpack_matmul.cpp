@@ -94,108 +94,57 @@ void ellpack_matmul_fused(
 
 
 
-template<bool USE_MASK, bool FUSE_RELU>
-void ellpack_matmul_fused_outer(
-    const Ellpack& ETL,    // ETL.m = N, ETL.n = M
-    const float*   X,      // [B × N] row-major
-    uint32_t       B,      // batch size
-    const float*   bias,   // length M
-    float*         Y       // [M × B] row-major
+void ellpack_matmul_outer(
+    const Ellpack& E,        // E.m = N, E.r = max nnz per row
+    const float* X,          // [B × N], row-major
+    uint32_t B,
+    const float* bias,       // [M]
+    float* Y                 // [M × B], row-major (M = max(E.idx) + 1)
 ) {
-    const uint32_t N = ETL.m;
-    const uint32_t M = ETL.n;
-    const uint32_t r = ETL.r;
-    bool use_avx512   = supports_avx512();
-    const uint32_t W  = use_avx512 ? 16u : 8u;
+    const bool use_avx512 = supports_avx512();
+    const uint32_t simd_width = use_avx512 ? 16u : 8u;
+    const uint32_t N = E.m;
+    const uint32_t r = E.r;
 
-    // 1) Initialize Y from bias
-    #pragma omp parallel for
-    for (uint32_t i = 0; i < M; ++i) {
-        float* yrow = Y + size_t(i)*B;
-        float  bi   = bias ? bias[i] : 0.0f;
+    const char* env = std::getenv("OMP_NUM_THREADS");
+    int nth = env ? std::atoi(env) : omp_get_max_threads();
+
+    for (uint32_t i = 0; i < E.n; ++i) {
+        float* yrow = Y + size_t(i) * B;
+        float bi = bias ? bias[i] : 0.0f;
         for (uint32_t b = 0; b < B; ++b) {
             yrow[b] = bi;
         }
     }
 
-    // 2) Outer-product over feature j
-    for (uint32_t j = 0; j < N; ++j) {
-        size_t base = size_t(j)*r;
-        uint32_t cnt = ETL.nnz[j];
+    #pragma omp parallel for num_threads(nth) schedule(static)
+    for (uint32_t i = 0; i < N; ++i) { // i is the "column" in original dense mat
+        const uint32_t count = E.nnz[i];
+        const size_t base = size_t(i) * r;
 
-        // Process batch 'columns' in width-W blocks
-        for (uint32_t bb = 0; bb < B; bb += W) {
-            uint32_t block = std::min(W, B - bb);
-            __mmask16 mask = USE_MASK
-                ? (__mmask16(1) << block) - 1
-                : __mmask16(-1);
+        for (uint32_t b = 0; b < B; b += simd_width) {
+            uint32_t block_size = std::min(simd_width, B - b);
+            __mmask16 mask = (block_size == 16) ? (__mmask16)0xFFFF : ((__mmask16(1) << block_size) - 1);
 
-            // Build an index vector for gathering X[bb..bb+block,j]:
-            //   offsets[k] = ((bb + k) * N + j) * sizeof(float)
-            alignas(64) int idxs[16];
-            for (uint32_t k = 0; k < block; ++k) {
-                idxs[k] = int((bb + k) * size_t(N) + j) * int(sizeof(float));
+            // Load 16 values from column i of X (i-th feature across batch)
+            float xblock[simd_width] = {0};
+            for (uint32_t j = 0; j < block_size; ++j) {
+                xblock[j] = X[(b + j) * N + i];  // Access X[b+j][i]
             }
-            // fill rest (if any) to avoid uninitialized reads
-            for (uint32_t k = block; k < W; ++k) {
-                idxs[k] = 0;
-            }
-            __m512i vidx = _mm512_load_si512(idxs);
+            __m512 xv = _mm512_maskz_loadu_ps(mask, xblock);
 
-            // Gather the feature column into xv:
-            __m512 xv = use_avx512
-                ? _mm512_mask_i32gather_ps(
-                    _mm512_setzero_ps(),   // zero for masked-off lanes
-                    mask,
-                    vidx,
-                    X,                     // base pointer
-                    1                      // scale = byte offset already embedded
-                  )
-                : [&]() {
-                    // scalar fallback
-                    float tmp[16];
-                    for (uint32_t k = 0; k < block; ++k) {
-                        tmp[k] = X[(bb + k)*N + j];
-                    }
-                    return _mm512_loadu_ps(tmp);
-                  }();
+            // For each nonzero in this row of E
+            for (uint32_t j = 0; j < count; ++j) {
+                float wij = E.Wd.ptr[base + j];
+                uint32_t row_idx = E.idx[base + j]; // row in Y to update
 
-            // Load existing yv for each lane
-            __m512 yv = use_avx512
-                ? (USE_MASK
-                   ? _mm512_maskz_loadu_ps(mask, Y + size_t(j)*0 /*dummy*/)
-                   : _mm512_loadu_ps(Y /*dummy*/))
-                // We'll actually reload per-row below; drop this line entirely
-                : _mm512_setzero_ps();
+                float* yrow = Y + size_t(row_idx) * B + b;
+                __m512 yv = _mm512_maskz_loadu_ps(mask, yrow);
 
-            // Now scatter into each output row i for which Wᵀ[j,i] != 0
-            for (uint32_t t = 0; t < cnt; ++t) {
-                uint32_t i = ETL.idx[base + t];
-                float    w = ETL.Wd.ptr[base + t];
+                __m512 wv = _mm512_set1_ps(wij);
+                __m512 out = _mm512_fmadd_ps(wv, xv, yv);
 
-                // scale xv by w into yv
-                __m512 wv = _mm512_set1_ps(w);
-                yv = _mm512_fmadd_ps(wv, xv, yv);
-
-                if constexpr (FUSE_RELU) {
-                    yv = _mm512_max_ps(yv, _mm512_setzero_ps());
-                }
-
-                // write back yv into Y[i, bb..]
-                float* yrow = Y + size_t(i)*B + bb;
-                if (use_avx512) {
-                    if (USE_MASK) {
-                        _mm512_mask_storeu_ps(yrow, mask, yv);
-                    } else {
-                        _mm512_storeu_ps(yrow, yv);
-                    }
-                } else {
-                    float tmp[16];
-                    _mm512_storeu_ps(tmp, yv);
-                    for (uint32_t k = 0; k < block; ++k) {
-                        yrow[k] = tmp[k];
-                    }
-                }
+                _mm512_mask_storeu_ps(yrow, mask, out);
             }
         }
     }
@@ -212,12 +161,12 @@ template void ellpack_matmul_fused<true, false>(
 template void ellpack_matmul_fused<true, true>(
     const Ellpack&, const float*, uint32_t, const float*, float*);
 
-// Tell the linker to generate code for instantiations:
-template void ellpack_matmul_fused_outer<false, false>(
-    const Ellpack&, const float*, uint32_t, const float*, float*);
-template void ellpack_matmul_fused_outer<false, true>(
-    const Ellpack&, const float*, uint32_t, const float*, float*);
-template void ellpack_matmul_fused_outer<true, false>(
-    const Ellpack&, const float*, uint32_t, const float*, float*);
-template void ellpack_matmul_fused_outer<true, true>(
-    const Ellpack&, const float*, uint32_t, const float*, float*);
+// // Tell the linker to generate code for instantiations:
+// template void ellpack_matmul_fused_outer<false, false>(
+//     const Ellpack&, const float*, uint32_t, const float*, float*);
+// template void ellpack_matmul_fused_outer<false, true>(
+//     const Ellpack&, const float*, uint32_t, const float*, float*);
+// template void ellpack_matmul_fused_outer<true, false>(
+//     const Ellpack&, const float*, uint32_t, const float*, float*);
+// template void ellpack_matmul_fused_outer<true, true>(
+//     const Ellpack&, const float*, uint32_t, const float*, float*);

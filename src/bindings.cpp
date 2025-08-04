@@ -71,13 +71,10 @@ PYBIND11_MODULE(sparseops_backend, m)
             };
             return py::array_t<uint32_t>(shape, strides, E.idx.data());
         })
-        .def_property_readonly("Xt", [](const Ellpack &E) {
-            std::array<ssize_t,2> shape   = { (ssize_t)E.m, (ssize_t)E.r };
-            std::array<ssize_t,2> strides = {
-                sizeof(float) * E.r,
-                sizeof(float)
-            };
-            return py::array_t<float>(shape, strides, E.Xt.ptr);
+        .def_property_readonly("nnz", [](const Ellpack &E) {
+            std::array<ssize_t, 1> shape   = { (ssize_t)E.m };
+            std::array<ssize_t, 1> strides = { sizeof(uint32_t) };
+            return py::array_t<uint32_t>(shape, strides, E.nnz.data());
         });
 
     // — API surface —
@@ -170,7 +167,7 @@ PYBIND11_MODULE(sparseops_backend, m)
                 E,
                 static_cast<const float*>(buf_X.ptr),
                 C,
-                static_cast<const float*>(buf_bias.ptr),
+                nullptr,
                 static_cast<float*>(buf_Y.ptr)
             );
             return Y_arr;
