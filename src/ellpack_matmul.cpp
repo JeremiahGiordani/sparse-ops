@@ -107,6 +107,15 @@ void ellpack_matmul_outer(
     const bool use_avx512 = supports_avx512();
     const uint32_t simd_width = use_avx512 ? 16u : 8u;
 
+    float* X_packed = new float[n * C];
+
+    #pragma omp parallel for
+    for (uint32_t col = 0; col < n; ++col) {
+        for (uint32_t b = 0; b < C; ++b) {
+            X_packed[col * C + b] = X[b * n + col];  // X_input[b][col]
+        }
+    }
+
     #pragma omp parallel for num_threads(nth) schedule(static)
     for (uint32_t i = 0; i < m; ++i) {
         float* yrow = Y + size_t(i) * C;
@@ -136,17 +145,10 @@ void ellpack_matmul_outer(
                 for (uint32_t j = 0; j < count; ++j) {
                     float    wj   = E.Wd.ptr[base + j];
                     uint32_t col  = E.idx [base + j];
-                    float xblock[simd_width];
-                    for (uint32_t k = 0; k < simd_width; ++k) {
-                        if (cb + k < C) {
-                            xblock[k] = X[(cb + k) * n + col];  // X is [B × N], row-major
-                        } else {
-                            xblock[k] = 0.0f;
-                        }
-                    }
+                    const float* xblk = X_packed + size_t(col) * C + cb;
 
                     __m512 wv = _mm512_set1_ps(wj);
-                    __m512 xv = _mm512_maskz_loadu_ps(mask, xblock);
+                    __m512 xv = _mm512_maskz_loadu_ps(mask, xblk);
                     yv = _mm512_fmadd_ps(wv, xv, yv);
                 }
 
