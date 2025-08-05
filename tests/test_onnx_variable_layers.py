@@ -42,13 +42,14 @@ class M(nn.Module):
     def forward(self, x):
         for layer in self.layers:
             x = F.relu(layer(x))
+            # x = layer(x)
         return x
 # ────────────────────────────────────────────────────────────────
 #  Configuration
 # ────────────────────────────────────────────────────────────────
 FC_IN, FC_OUT = 1000, 1000
 INPUT_DIM       = FC_IN
-NUM_LAYERS      = 10
+NUM_LAYERS      = 2
 SPARSITY        = 0.90
 N_RUNS          = 100
 SEED            = 42
@@ -105,12 +106,13 @@ input_name = session.get_inputs()[0].name
 # ────────────────────────────────────────────────────────────────
 # 1D host vector
 x = np.random.randn(BATCH_DIM, INPUT_DIM).astype(np.float32)
+t_t = torch.from_numpy(x)
 
 # for ONNX Runtime: shape (1, INPUT_DIM)
 x_onnx = x
 
 # for custom model: shape (INPUT_DIM, 1)
-x_custom = x.T
+x_custom = np.asfortranarray(x)
 
 # ────────────────────────────────────────────────────────────────
 #  Define runner functions
@@ -118,7 +120,7 @@ x_custom = x.T
 def torch_run():
     # input shape (BATCH_DIM, INPUT_DIM)
     with torch.no_grad():
-        return m(torch.from_numpy(x))
+        return m(x)
 
 def custom_run():
     # returns shape (FC_2_OUT, 1) → reshape to (BATCH_DIM, FC_2_OUT)
