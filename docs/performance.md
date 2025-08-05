@@ -8,6 +8,7 @@ Benchmarks were run on:
 - **CPU**: Intel Xeon Gold 6338
 - **Compiler**: GCC 12.2.0 with -O3 -march=native -funroll-loops
 - **MKL Version**: 2025.2
+- **OpenBLAS Version**: 0.3.21+ds4
 - **Custom Kernel**: Built with AVX-512
 
 ---
