@@ -1,8 +1,8 @@
 # Performance Benchmarks
 
-## Benchmark MKL
+## Kernel Benchmark
 
-This section presents the runtime performance of the custom kernel compared to **Intel MKL Sparse GEMM** and **Intel MKL Dense GEMM** under various matrix configurations.
+This section presents the runtime performance of the custom kernel compared to **Intel MKL Sparse GEMM** and **OpenBLAS Dense GEMM** under various matrix configurations.
 
 Benchmarks were run on:
 - **CPU**: Intel Xeon Gold 6338
@@ -12,15 +12,14 @@ Benchmarks were run on:
 
 ---
 
-## Hyperparameter Definitions
+### Hyperparameter Definitions
 
 - `M`: Number of rows in the first matrix
 - `N`: Number of columns in the first matrix (and rows in the second matrix)
 - `C`: Number of columns in the second matrix
 - `SPARSITY`: Fraction of zeros in the input matrix (0 = dense, 0.9 = 90% zeros)
-- `THREADS`: Number of CPU threads used for computation
 
-## Unified Benchmark Results
+## Results
 
 ### Single threaded
 
