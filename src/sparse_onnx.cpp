@@ -13,6 +13,36 @@
 
 namespace {
 
+// Reorder columns of W (M x N) *in place into* newW, mapping row-major (W-fast) to Fortran (C-fast).
+static void reorder_fc_columns_for_fortran_flatten(
+    const std::vector<float>& W_in, // M*N
+    uint32_t M, uint32_t C, uint32_t H, uint32_t Wd, // (Wd = width)
+    std::vector<float>& W_out       // M*N (result)
+) {
+    const uint32_t N = C * H * Wd;
+    W_out.assign(M * size_t(N), 0.0f);
+
+    for (uint32_t c = 0; c < C; ++c) {
+        for (uint32_t h = 0; h < H; ++h) {
+            for (uint32_t w = 0; w < Wd; ++w) {
+                const uint32_t rm = c*H*Wd + h*Wd + w;          // PyTorch flatten order
+                const uint32_t cm = c + C*(h + H*w);            // our Fortran flatten order
+                const size_t    src_col = rm;
+                const size_t    dst_col = cm;
+                // copy column rm -> cm
+                for (uint32_t m = 0; m < M; ++m) {
+                    W_out[m*size_t(N) + dst_col] = W_in[m*size_t(N) + src_col];
+                }
+            }
+        }
+    }
+}
+
+}
+
+
+namespace {
+
 /// Helper to parse a TensorProto of floats into a flat std::vector<float>.
 static void parseTensor(
     const onnx::TensorProto &tp,
@@ -139,6 +169,22 @@ SparseOnnxModel::SparseOnnxModel(const std::string &onnx_path) {
             parseTensor(*W_tp, W_data);
             uint32_t M = W_tp->dims(0), N = W_tp->dims(1);
 
+            const std::string& mm_input_name = node.input(0);
+            auto fit = flatten_src_shape_.find(mm_input_name);
+            if (fit != flatten_src_shape_.end()) {
+                const auto& fsrc = fit->second;           // expect {B,C,H,W}
+                if (fsrc.size() == 4) {
+                    const uint32_t C = (uint32_t)fsrc[1];
+                    const uint32_t H = (uint32_t)fsrc[2];
+                    const uint32_t Wd= (uint32_t)fsrc[3];
+                    if (C * H * Wd == N) {
+                        std::vector<float> W_perm;
+                        reorder_fc_columns_for_fortran_flatten(W_data, M, C, H, Wd, W_perm);
+                        W_data.swap(W_perm);
+                    }
+                }
+            }
+
             // --- encode to ELLPACK ---
             Ellpack E = convert_to_ellpack(W_data.data(), M, N);
 
@@ -180,6 +226,22 @@ SparseOnnxModel::SparseOnnxModel(const std::string &onnx_path) {
             std::vector<float> W_data;
             parseTensor(*W_tp, W_data);
             uint32_t M = W_tp->dims(0), N = W_tp->dims(1);
+
+            const std::string& mm_input_name = node.input(0);
+            auto fit = flatten_src_shape_.find(mm_input_name);
+            if (fit != flatten_src_shape_.end()) {
+                const auto& fsrc = fit->second;           // expect {B,C,H,W}
+                if (fsrc.size() == 4) {
+                    const uint32_t C = (uint32_t)fsrc[1];
+                    const uint32_t H = (uint32_t)fsrc[2];
+                    const uint32_t Wd= (uint32_t)fsrc[3];
+                    if (C * H * Wd == N) {
+                        std::vector<float> W_perm;
+                        reorder_fc_columns_for_fortran_flatten(W_data, M, C, H, Wd, W_perm);
+                        W_data.swap(W_perm);
+                    }
+                }
+            }
             Ellpack E = convert_to_ellpack(W_data.data(), M, N);
 
             std::vector<float> bdata;
@@ -199,7 +261,9 @@ SparseOnnxModel::SparseOnnxModel(const std::string &onnx_path) {
                 /* outputs: this node’s output */
                 { node.output(0) }
             });
-            bias_plans.push_back({ layers_.size()-1, std::move(bdata) });
+            if (!bdata.empty()) {
+                bias_plans.push_back({ layers_.size()-1, std::move(bdata) });
+            }
 
             shape_map_[out] = { int(batch_dim_), int(M) };
             continue;
@@ -296,54 +360,74 @@ SparseOnnxModel::SparseOnnxModel(const std::string &onnx_path) {
                 LayerType::Reshape,
                 LayerOp::Flatten,
                 FlattenAttr{axis},
-                /* flatten input */
                 { node.input(0) },
-                /* flatten output */
                 { node.output(0) }
             });
-            auto in_shape = shape_map_.at(node.input(0));
-            std::vector<int> flat = { in_shape[0] }; 
+
+            auto in_shape = shape_map_.at(node.input(0));  // expect {B,C,H,W}
+            // Remember the *input* shape so FC can realign its columns
+            flatten_src_shape_[ node.output(0) ] = in_shape;
+
+            std::vector<int> flat = { in_shape[0] };
             int prod = 1;
-            for (int i = axis; i < in_shape.size(); ++i) prod *= in_shape[i];
+            for (int i = axis; i < (int)in_shape.size(); ++i) prod *= in_shape[i];
             flat.push_back(prod);
             shape_map_[out] = flat;
             continue;
         }
 
         if (op == "Conv") {
-            // 1) Load & parse the raw 4D kernel
+            // 1) Load raw kernel (Cout, Cin, kH, kW)
             auto itW = init_map.find(node.input(1));
-            if (itW == init_map.end()) {
-                throw std::runtime_error("Conv weight initializer not found");
-            }
+            if (itW == init_map.end()) throw std::runtime_error("Conv weight initializer not found");
             const onnx::TensorProto* W_tp = itW->second;
+
             std::vector<float> raw_kernel;
-            parseTensor(*W_tp, raw_kernel);  // length = Cout*Cin*kH*kW
+            parseTensor(*W_tp, raw_kernel);
 
-            // 2) Extract dimensions
-            std::array<int,4> dims = {
-                int(W_tp->dims(0)),  // Cout
-                int(W_tp->dims(1)),  // Cin
-                int(W_tp->dims(2)),  // kH
-                int(W_tp->dims(3))   // kW
-            };
-            int Cout = dims[0], Cin = dims[1], kH = dims[2], kW = dims[3];
+            const int Cout = int(W_tp->dims(0));
+            const int Cin  = int(W_tp->dims(1));
+            const int kH   = int(W_tp->dims(2));
+            const int kW   = int(W_tp->dims(3));
 
-            // 3) Build the dense weight matrix of shape [Cout × (Cin*kH*kW)]
-            size_t M = size_t(Cout);
-            size_t N = size_t(Cin) * kH * kW;
-            std::vector<float> weight_mat;
-            weight_mat.reserve(M*N);
-            // raw_kernel is already in [Cout][Cin][kH][kW] row‐major order,
-            // so a straight copy yields the desired 2D layout:
-            weight_mat.insert(weight_mat.end(),
-                            raw_kernel.begin(),
-                            raw_kernel.end());
+            // 2) Flatten weights to 2D [Cout × (Cin*kH*kW)] in cin-major, then kh, then kw
+            //    (This matches the KMap order we’ll build below.)
+            const uint32_t K = uint32_t(Cin) * kH * kW;
+            std::vector<float> weight_mat; weight_mat.reserve(size_t(Cout) * K);
+            // raw_kernel is [Cout][Cin][kH][kW] row-major already in that nesting order,
+            // so a straight copy preserves the (cin,kh,kw) inner iteration.
+            weight_mat.insert(weight_mat.end(), raw_kernel.begin(), raw_kernel.end());
 
-            // 4) Encode into ELLPACK
-            Ellpack E = convert_to_ellpack(weight_mat.data(), static_cast<uint32_t>(M), static_cast<uint32_t>(N));
+            // 3) ELLPACK encode (rows=Cout, cols=K)
+            Ellpack E = convert_to_ellpack(weight_mat.data(),
+                                        static_cast<uint32_t>(Cout),
+                                        K);
 
-            // 5) Optional bias
+            // 4) Read conv attributes
+            uint32_t pad_h=0, pad_w=0, stride_h=1, stride_w=1, dil_h=1, dil_w=1, group=1;
+            for (const auto &A : node.attribute()) {
+                const std::string &n = A.name();
+                if (n == "pads"     && A.ints_size() == 4) { pad_h = A.ints(0); pad_w = A.ints(1); /* end pads ignored */ }
+                else if (n == "strides"   && A.ints_size() == 2) { stride_h = A.ints(0); stride_w = A.ints(1); }
+                else if (n == "dilations" && A.ints_size() == 2) { dil_h = A.ints(0); dil_w = A.ints(1); }
+                else if (n == "group") { group = static_cast<uint32_t>(A.i()); }
+            }
+            if (group != 1) throw std::runtime_error("Grouped conv not supported (yet)");
+
+            // 5) Input geometry
+            const auto in_shape = shape_map_.at(node.input(0)); // {B, Cin, H_in, W_in}
+            if (in_shape.size() != 4) throw std::runtime_error("Conv input must be 4D");
+            const uint32_t B    = static_cast<uint32_t>(in_shape[0]);
+            const uint32_t Cin_ = static_cast<uint32_t>(in_shape[1]);
+            const uint32_t H_in = static_cast<uint32_t>(in_shape[2]);
+            const uint32_t W_in = static_cast<uint32_t>(in_shape[3]);
+            if (Cin_ != static_cast<uint32_t>(Cin)) throw std::runtime_error("Conv Cin mismatch");
+
+            // 6) Output geometry
+            const uint32_t H_out = (H_in + 2*pad_h - (uint32_t(dil_h)*(kH-1) + 1)) / stride_h + 1;
+            const uint32_t W_out = (W_in + 2*pad_w - (uint32_t(dil_w)*(kW-1) + 1)) / stride_w + 1;
+
+            // 7) Optional bias
             std::vector<float> bias_vec;
             if (node.input_size() > 2) {
                 if (auto itB = init_map.find(node.input(2)); itB != init_map.end()) {
@@ -351,149 +435,95 @@ SparseOnnxModel::SparseOnnxModel(const std::string &onnx_path) {
                 }
             }
 
-            // 6) Create the ConvAttr and push the layer
-            ConvAttr c {
-                std::move(E),          // ELLPACK handle
-                nullptr,               // bias_ptr
-                dims,                  // kernel_dims
-                {0,0,0,0},             // pads
-                {1,1},                 // strides
-                {1,1},                 // dilations
-                1                      // group
-            };
-
-            // Overwrite defaults from the node’s attributes
-            for (const auto &A : node.attribute()) {
-                const std::string &n = A.name();
-                if (n == "pads" && A.ints_size() == 4) {
-                    c.pads = {
-                        int(A.ints(0)), int(A.ints(1)),
-                        int(A.ints(2)), int(A.ints(3))
-                    };
-                }
-                else if (n == "strides" && A.ints_size() == 2) {
-                    c.strides = {
-                        int(A.ints(0)), int(A.ints(1))
-                    };
-                }
-                else if (n == "dilations" && A.ints_size() == 2) {
-                    c.dilations = {
-                        int(A.ints(0)), int(A.ints(1))
-                    };
-                }
-                else if (n == "group") {
-                    c.group = static_cast<int>(A.i());
-                }
-            }
-
-            auto in_shape = shape_map_.at(node.input(0));
-            // Expect { B, Cin, H_in, W_in }
-            if (in_shape.size() != 4) {
-                throw std::runtime_error("Conv input must be 4D");
-            }
-            int H_in = in_shape[2];
-            int W_in = in_shape[3];
-
-            // Copy into the attr
-            c.H_in = H_in;
-            c.W_in = W_in;
-
-            int H_out = (H_in + c.pads[0] + c.pads[2]
-                        - c.dilations[0] * (kH - 1) - 1)
-                    / c.strides[0] + 1;
-            int W_out = (W_in + c.pads[1] + c.pads[3]
-                        - c.dilations[1] * (kW - 1) - 1)
-                    / c.strides[1] + 1;
-
-            c.H_out = H_out;
-            c.W_out = W_out;
-
-            // Pre-allocate the index map: each of the H_out*W_out patches
-            // has Cin*kH*kW elements
-            size_t patch_size  = size_t(Cin) * kH * kW;
-            size_t num_patches = size_t(H_out) * W_out;
-            c.patch_indices.resize(patch_size * num_patches);
-
-            // Fill it just once
-            size_t idx = 0;
-            for (int ph = 0; ph < H_out; ++ph) {
-                int base_h = ph * c.strides[0] - c.pads[0];
-                for (int pw = 0; pw < W_out; ++pw) {
-                    int base_w = pw * c.strides[1] - c.pads[1];
-                    // for each channel + kernel cell
-                    for (int ic = 0; ic < Cin; ++ic) {
-                        size_t channel_off = size_t(ic) * H_in * W_in;
-                        for (int kh = 0; kh < kH; ++kh) {
-                            int ih = base_h + kh * c.dilations[0];
-                            for (int kw = 0; kw < kW; ++kw) {
-                                int iw = base_w + kw * c.dilations[1];
-                                size_t in_features = size_t(Cin) * H_in * W_in;
-                                size_t offset;
-                                if ((unsigned)ih < (unsigned)H_in &&
-                                    (unsigned)iw < (unsigned)W_in) {
-                                    offset = channel_off
-                                            + size_t(ih) * W_in
-                                            + size_t(iw);
-                                } else {
-                                    offset = in_features;
-                                }
-                                c.patch_indices[idx++] = offset;
-                            }
-                        }
+            // 8) Build kmap (cin-major, then kh, kw) with pre-padded offsets
+            std::vector<KMap> kmap; kmap.reserve(K);
+            for (uint32_t c = 0; c < (uint32_t)Cin; ++c) {
+                for (uint32_t kh = 0; kh < (uint32_t)kH; ++kh) {
+                    for (uint32_t kw = 0; kw < (uint32_t)kW; ++kw) {
+                        kmap.push_back(KMap{
+                            /*cin=*/c,
+                            /*dh =*/ int32_t(-int(pad_h) + int(kh)*int(dil_h)),
+                            /*dw =*/ int32_t(-int(pad_w) + int(kw)*int(dil_w))
+                        });
                     }
                 }
             }
 
-            // Finally, record the output shape for downstream layers:
-            // { B, Cout, H_out, W_out }
-            shape_map_[ node.output(0) ] = { batch_dim_, Cout, H_out, W_out };
+            // 9) Assemble ConvAttr
+            ConvAttr cattr{
+                std::move(E),         // E
+                /*bias_ptr*/ nullptr, // bias_ptr
 
-            // 7) Push the Conv layer as before
+                // geometry/params
+                static_cast<uint32_t>(Cin),
+                static_cast<uint32_t>(Cout),
+                static_cast<uint32_t>(kH),
+                static_cast<uint32_t>(kW),
+                stride_h, stride_w,
+                pad_h, pad_w,
+                dil_h, dil_w,
+                group,
+                static_cast<uint32_t>(H_in),
+                static_cast<uint32_t>(W_in),
+                static_cast<uint32_t>(H_out),
+                static_cast<uint32_t>(W_out),
+
+                // kmap
+                std::move(kmap)
+            };
+
+            // 10) Push layer + record output shape ({B, Cout, H_out, W_out})
             layers_.push_back({
                 LayerType::Conv,
                 LayerOp::Conv,
-                std::move(c),
+                std::move(cattr),
                 { node.input(0) },
                 { node.output(0) }
             });
-            bias_plans.push_back({ layers_.size() - 1, std::move(bias_vec) });
+            shape_map_[ node.output(0) ] = { int(B), Cout, int(H_out), int(W_out) };
 
+            // stash bias for packing later
+            if (!bias_vec.empty()) {
+                bias_plans.push_back({ layers_.size() - 1, std::move(bias_vec) });
+            }
             continue;
         }
+
 
         throw std::runtime_error("Unsupported ONNX op: " + op);
     }
 
     // Sum up every bias vector’s length
     size_t total_bias = 0;
-    for (auto &bp : bias_plans) {
-        total_bias += bp.data.size();
-    }
+    for (auto &bp : bias_plans) total_bias += bp.data.size();
 
-    // Allocate one contiguous block
-    bias_data_.reset(new float[total_bias]);
+    bias_data_.reset(total_bias ? new float[total_bias] : nullptr);
     float* bptr = bias_data_.get();
 
-    // Copy each bias vector into the block and update the Layer’s payload
     for (auto &bp : bias_plans) {
-        size_t idx = bp.layer_idx;
-        size_t len = bp.data.size();
+        const size_t idx = bp.layer_idx;
+        const size_t len = bp.data.size();
 
-        // memcpy into the big buffer
-        std::memcpy(bptr, bp.data.data(), len * sizeof(float));
-
-        // Point the payload’s bias_ptr at this slice
         Layer &L = layers_[idx];
-        if (std::holds_alternative<MatMulAttr>(L.attr)) {
-            auto &ma = std::get<MatMulAttr>(L.attr);
-            ma.bias_ptr = bptr;
-        }
-        else if (std::holds_alternative<ConvAttr>(L.attr)) {
-            auto &ca = std::get<ConvAttr>(L.attr);
-            ca.bias_ptr = bptr;
+
+        if (len == 0) {
+            // No bias for this layer: make sure ptr stays null
+            if (std::holds_alternative<MatMulAttr>(L.attr)) {
+                std::get<MatMulAttr>(L.attr).bias_ptr = nullptr;
+            } else if (std::holds_alternative<ConvAttr>(L.attr)) {
+                std::get<ConvAttr>(L.attr).bias_ptr = nullptr;
+            }
+            continue;
         }
 
-        bptr += len;  // advance to next free slot
+        // Copy and set pointer
+        std::memcpy(bptr, bp.data.data(), len * sizeof(float));
+        if (std::holds_alternative<MatMulAttr>(L.attr)) {
+            std::get<MatMulAttr>(L.attr).bias_ptr = bptr;
+        } else if (std::holds_alternative<ConvAttr>(L.attr)) {
+            std::get<ConvAttr>(L.attr).bias_ptr = bptr;
+        }
+        bptr += len;
     }
 
     // Last MatMul layer index

@@ -12,25 +12,6 @@
 
 namespace py = pybind11;
 
-void conv2d_implicit_im2col_fmajor(
-    const ConvPlan& P,
-    const float*    X,
-    uint32_t        B,
-    uint32_t        H, uint32_t W,
-    uint32_t        Hout, uint32_t Wout,
-    const float*    bias,   // nullptr if no bias
-    float*          Y
-);
-
-EllpackW encode_ellpack_from_weight(const float* W,
-                                           uint32_t Cout, uint32_t Cin,
-                                           uint32_t kH, uint32_t kW);
-
-
-std::vector<KMap> build_kmap(uint32_t Cin, uint32_t kH, uint32_t kW,
-                                    uint32_t pad_h, uint32_t pad_w,
-                                    uint32_t dil_h=1, uint32_t dil_w=1);
-
 // ─────────────────────────────────────────────────────────────────────────────
 // Encode to ELLPACK format
 static Ellpack convert_to_ellpack_py(
@@ -64,84 +45,6 @@ static py::array_t<float> decode_from_ellpack_py(const Ellpack& E)
     return W_out;
 }
 
-static ConvPlan setup_conv_from_numpy(const py::array& weights,
-                                      int stride=1, int padding=0)
-{
-    if (weights.ndim() != 4)
-        throw std::runtime_error("weights must be 4D (Cout, Cin, kH, kW)");
-    auto w = weights.cast<py::array_t<float, py::array::c_style | py::array::forcecast>>();
-    auto bw = w.request();
-    const uint32_t Cout = static_cast<uint32_t>(bw.shape[0]);
-    const uint32_t Cin  = static_cast<uint32_t>(bw.shape[1]);
-    const uint32_t kH   = static_cast<uint32_t>(bw.shape[2]);
-    const uint32_t kW   = static_cast<uint32_t>(bw.shape[3]);
-
-    const float* Wptr = static_cast<const float*>(bw.ptr);
-
-    ConvPlan P;
-    P.Cout = Cout; P.Cin = Cin; P.kH = kH; P.kW = kW;
-    P.stride_h = P.stride_w = static_cast<uint32_t>(stride);
-    P.pad_h    = P.pad_w    = static_cast<uint32_t>(padding);
-
-    P.kmap = build_kmap(Cin, kH, kW, P.pad_h, P.pad_w, /*dil_h=*/1, /*dil_w=*/1);
-    P.W    = encode_ellpack_from_weight(Wptr, Cout, Cin, kH, kW);
-    return P;
-}
-
-static py::array_t<float, py::array::f_style>
-conv2d_ellpack_run(const ConvPlan& P,
-                   py::array_t<float, py::array::f_style | py::array::forcecast> X_f,
-                   py::object bias_opt = py::none())
-{
-    auto bx = X_f.request();
-    if (bx.ndim != 4) throw std::runtime_error("X must be 4D (B,Cin,H,W) Fortran-ordered");
-    const ssize_t item = sizeof(float);
-
-    const uint32_t B   = static_cast<uint32_t>(bx.shape[0]);
-    const uint32_t Cin = static_cast<uint32_t>(bx.shape[1]);
-    const uint32_t H   = static_cast<uint32_t>(bx.shape[2]);
-    const uint32_t W   = static_cast<uint32_t>(bx.shape[3]);
-
-    // strict Fortran contiguity checks for (B,Cin,H,W):
-    if (bx.strides[0] != item ||
-        bx.strides[1] != static_cast<ssize_t>(B) * item ||
-        bx.strides[2] != static_cast<ssize_t>(B) * static_cast<ssize_t>(Cin) * item ||
-        bx.strides[3] != static_cast<ssize_t>(B) * static_cast<ssize_t>(Cin) * static_cast<ssize_t>(H) * item) {
-        throw std::runtime_error("X must be Fortran contiguous with layout (B,Cin,H,W)");
-    }
-    if (Cin != P.Cin)
-        throw std::runtime_error("X Cin does not match plan.Cin");
-
-    const uint32_t Hout = (H + 2*P.pad_h - P.kH) / P.stride_h + 1;
-    const uint32_t Wout = (W + 2*P.pad_w - P.kW) / P.stride_w + 1;
-
-    const float* bias_ptr = nullptr;
-    std::vector<float> bias_buf;
-    if (!bias_opt.is_none()) {
-        auto b = bias_opt.cast<py::array_t<float, py::array::c_style | py::array::forcecast>>();
-        auto bb = b.request();
-        if (bb.ndim != 1 || static_cast<uint32_t>(bb.shape[0]) != P.Cout)
-            throw std::runtime_error("bias must be 1D length Cout");
-        bias_ptr = static_cast<const float*>(bb.ptr);
-    }
-
-    // Allocate Fortran (B,Cout,Hout,Wout): strides = [1, B, B*Cout, B*Cout*Hout] * item
-    std::array<ssize_t,4> y_shape   { B, static_cast<ssize_t>(P.Cout), Hout, Wout };
-    std::array<ssize_t,4> y_strides { item,
-                                      static_cast<ssize_t>(B) * item,
-                                      static_cast<ssize_t>(B) * static_cast<ssize_t>(P.Cout) * item,
-                                      static_cast<ssize_t>(B) * static_cast<ssize_t>(P.Cout) * static_cast<ssize_t>(Hout) * item };
-
-    py::array_t<float, py::array::f_style> Y(y_shape, y_strides);
-    auto by = Y.request();
-
-    conv2d_implicit_im2col_fmajor(P,
-                                  static_cast<const float*>(bx.ptr),
-                                  B, H, W, Hout, Wout,
-                                  bias_ptr,
-                                  static_cast<float*>(by.ptr));
-    return Y;
-}
 
 // ─────────────────────────────────────────────────────────────────────────────
 PYBIND11_MODULE(sparseops_backend, m)
@@ -178,31 +81,11 @@ PYBIND11_MODULE(sparseops_backend, m)
             return py::array_t<float>(shape, strides, E.Xt.ptr);
         });
 
-    py::class_<ConvPlan>(m, "ConvPlan")
-        .def_property_readonly("Cin",  [](const ConvPlan& p){ return p.Cin; })
-        .def_property_readonly("Cout", [](const ConvPlan& p){ return p.Cout; })
-        .def_property_readonly("kH",   [](const ConvPlan& p){ return p.kH; })
-        .def_property_readonly("kW",   [](const ConvPlan& p){ return p.kW; })
-        .def_property_readonly("stride_h", [](const ConvPlan& p){ return p.stride_h; })
-        .def_property_readonly("stride_w", [](const ConvPlan& p){ return p.stride_w; })
-        .def_property_readonly("pad_h",    [](const ConvPlan& p){ return p.pad_h; })
-        .def_property_readonly("pad_w",    [](const ConvPlan& p){ return p.pad_w; });
-
     // — API surface —
     m.def("convert_to_ellpack", &convert_to_ellpack_py,
           "Convert dense NumPy matrix → ELLPACK handle");
     m.def("decode_from_ellpack", &decode_from_ellpack_py,
           "Convert ELLPACK handle → dense NumPy matrix");
-
-    m.def("setup_conv",
-          &setup_conv_from_numpy,
-          py::arg("weights"),
-          py::arg("stride") = 1,
-          py::arg("padding") = 0,
-          R"doc(
-        Build a ConvPlan from weights shaped (Cout, Cin, kH, kW).
-        Stride/padding are integers (no dilation, groups=1).
-        )doc");
 
 
     m.def("ellpack_matvec",
@@ -310,15 +193,6 @@ PYBIND11_MODULE(sparseops_backend, m)
     //     py::arg("input"),
     //     "Run a single 2D convolution (no bias, padding=1) on a float tensor"
     // );
-
-    m.def("conv2d_ellpack",
-          &conv2d_ellpack_run,
-          py::arg("plan"),
-          py::arg("X_f"),
-          py::arg("bias") = py::none(),
-          R"doc(
-            Run sparse conv with Fortran (B,Cin,H,W) input; returns Fortran (B,Cout,Hout,Wout).
-            )doc");
 
     // — Sparse ONNX model —
     py::class_<SparseOnnxModel>(m, "SparseOnnxModel")

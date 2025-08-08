@@ -14,6 +14,7 @@
 #include <limits>
 #include <cstdlib>
 #include <immintrin.h>
+#include <unordered_set>
 
 #include "ellpack_matmul.hpp"       // ellpack_matmul
 #include "ellpack_encoder.hpp"   // for Ellpack
@@ -23,38 +24,6 @@
 /// C++ interface for loading an ONNX model and running inference
 /// via pre-encoded ELLPACK sparse kernels, with fixed (static) batch size
 /// inferred from the model’s input shape.
-
-struct EllpackW {
-    uint32_t m{0};   // Cout
-    uint32_t n{0};   // K
-    uint32_t r{0};   // max nnz per row
-    AlignedBuffer Wd;                // m*r floats
-    std::vector<uint32_t> idx;       // m*r indices into [0..K)
-    std::vector<uint32_t> nnz;       // m counts
-
-    EllpackW() = default;
-    EllpackW(uint32_t _m, uint32_t _n, uint32_t _r)
-      : m(_m), n(_n), r(_r), Wd(size_t(_m)*_r), idx(size_t(_m)*_r, 0), nnz(_m, 0) {}
-};
-
-struct KMap { uint32_t cin; int32_t dh; int32_t dw; };
-
-// Conv plan we return to Python
-struct ConvPlan {
-    // geometry
-    uint32_t Cin{0}, Cout{0}, kH{0}, kW{0};
-    uint32_t stride_h{1}, stride_w{1};
-    uint32_t pad_h{0}, pad_w{0};
-    // weights + kernel-position map
-    EllpackW W;
-    std::vector<KMap> kmap;
-
-    ConvPlan() = default;
-    ConvPlan(ConvPlan&&) = default;
-    ConvPlan& operator=(ConvPlan&&) = default;
-    ConvPlan(const ConvPlan&) = delete;
-    ConvPlan& operator=(const ConvPlan&) = delete;
-};
 
 /// Supported layer types in the ONNX graph.
 enum class LayerType {  
@@ -81,23 +50,32 @@ struct MatMulAttr {
   float*     bias_ptr;    // length = E.m
 };
 
-
-struct ConvAttr {
-    // The ELLPACK handle for the *im2col* weight matrix, of size:
-    //   rows = Cout
-    //   cols = Cin * kH * kW
-    Ellpack              E;
-    float*               bias_ptr;
-    std::array<int,4>    kernel_dims; // dimensions: {Cout, Cin, kH, kW}
-    std::array<int,4>    pads; // {padH_begin, padW_begin, padH_end, padW_end}
-    std::array<int,2>    strides; // {sH, sW}
-    std::array<int,2>    dilations; // {dH, dW}
-    int                  group;
-    int                  H_in, W_in;    // spatial dims of the *input*
-    int                  H_out, W_out;  // computed from pads/strides
-    std::vector<size_t>  patch_indices; // length = Cin*kH*kW * (H_out*W_out)
+struct KMap {
+  uint32_t cin;
+  int32_t  dh;
+  int32_t  dw;
 };
 
+
+struct ConvAttr {
+  // ELLPACK over K = Cin*kH*kW (rows = Cout)
+  Ellpack              E;
+  float*               bias_ptr = nullptr;
+
+  // kernel + conv params
+  uint32_t             Cin = 0, Cout = 0, kH = 0, kW = 0;
+  uint32_t             stride_h = 1, stride_w = 1;
+  uint32_t             pad_h = 0, pad_w = 0;
+  uint32_t             dil_h = 1, dil_w = 1;
+  uint32_t             group = 1; // (only 1 supported for now)
+
+  // spatial geometry
+  uint32_t             H_in = 0, W_in = 0;
+  uint32_t             H_out = 0, W_out = 0;
+
+  // precomputed map from k∈[0..K) → (cin, dh, dw)
+  std::vector<KMap>    kmap;
+};
 struct PoolAttr {
   std::vector<int>   kernel_shape;  // {kH, kW}
   std::vector<int>   pads;          // same convention
@@ -182,6 +160,7 @@ private:
     bool                                          use_mask;
     std::string                                   input_name_;
     std::string                                   output_name_;
+    std::unordered_map<std::string, std::vector<int>> flatten_src_shape_;
     // per‐op helpers, return a freshly‐allocated buffer of shape [rows×C]
     RunResult applyMatMul            (const MatMulAttr&   , const float* src, uint32_t B, float* out_buf = nullptr) const;
     RunResult applyMatMulRelu        (const MatMulAttr&   , const float* src, uint32_t B, float* out_buf = nullptr) const;

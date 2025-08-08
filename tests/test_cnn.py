@@ -24,7 +24,7 @@ def average_runtime(func, n_runs: int = 100):
 class CNNFC(nn.Module):
     def __init__(self, in_channels=3, conv_out=16, fc_out=12, img_size=32):
         super().__init__()
-        self.conv = nn.Conv2d(in_channels, conv_out, kernel_size=3, padding=1)
+        self.conv = nn.Conv2d(in_channels, conv_out, kernel_size=3, padding=1, bias=None)
         self.flatten = nn.Flatten()
         self.fc = nn.Linear(conv_out * img_size * img_size, fc_out)
 
@@ -37,11 +37,11 @@ class CNNFC(nn.Module):
 # ────────────────────────────────────────────────────────────────
 # Config
 # ────────────────────────────────────────────────────────────────
-IMG_SIZE     = 32
-BATCH_DIM    = 1
+IMG_SIZE     = 2
+BATCH_DIM    = 2
 IN_CHANNELS  = 3
-CONV_OUT     = 16
-FC_OUT       = 12
+CONV_OUT     = 2
+FC_OUT       = 14
 SPARSITY     = 0.90
 N_RUNS       = 1
 SEED         = 42
@@ -51,11 +51,11 @@ np.random.seed(SEED)
 model = CNNFC(in_channels=IN_CHANNELS, conv_out=CONV_OUT, fc_out=FC_OUT, img_size=IMG_SIZE).eval()
 dummy = torch.randn(BATCH_DIM, IN_CHANNELS, IMG_SIZE, IMG_SIZE)
 
-with torch.no_grad():
-    if model.conv.bias is not None:
-        model.conv.bias.zero_()
-    if model.fc.bias is not None:
-        model.fc.bias.zero_()
+# with torch.no_grad():
+#     if model.conv.bias is not None:
+#         model.conv.bias.zero_()
+    # if model.fc.bias is not None:
+    #     model.fc.bias.zero_()
 
 # Apply pruning
 prune.random_unstructured(model.conv, name="weight", amount=SPARSITY)
@@ -91,6 +91,7 @@ custom_model = SparseOnnxModel(onnx_path)
 x = np.random.randn(BATCH_DIM, IN_CHANNELS, IMG_SIZE, IMG_SIZE).astype(np.float32)
 x_onnx = x
 x_t = torch.from_numpy(x)
+x_custom = np.asfortranarray(x)
 
 
 # ────────────────────────────────────────────────────────────────
@@ -101,7 +102,7 @@ def torch_run():
         return model(x_t).numpy()
 
 def custom_run():
-    return custom_model.run(x)
+    return custom_model.run(x_custom)
 
 def onnx_run():
     return session.run(None, {input_name: x_onnx})[0]
@@ -120,12 +121,17 @@ print("torch reference")
 print(y_ref)
 print("="*50)
 print("Sparse output:")
-print(y_sp.T)
+print(y_sp)
+print("="*50)
+print("Sparse shape:")
 print(y_sp.shape)
+print("torch shape")
+print(y_ref.shape)
 
 print("=== Verifying correctness ===")
+
 print("Torch vs ONNX Runtime:  ", np.allclose(y_ref, y_onnx, atol=1e-4))
-print("Torch vs SparseModel:   ", np.allclose(y_ref, y_sp.T, atol=1e-4))
+print("Torch vs SparseModel:   ", np.allclose(y_ref, y_sp, atol=1e-4))
 
 # ────────────────────────────────────────────────────────────────
 # Benchmark

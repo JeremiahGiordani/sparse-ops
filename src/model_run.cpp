@@ -113,50 +113,35 @@ void SparseOnnxModel::run(
             owned[oname] = R.owned;
         }
 
+        std::unordered_set<float*> out_ptrs;
+        out_ptrs.reserve(L.outputs.size());
+        for (const auto &oname : L.outputs) out_ptrs.insert(buf[oname]);
+
         // 5) Free any inputs no longer needed
         for (auto &iname : L.inputs) {
-            // decrement use‐count
             if (--refcount[iname] == 0 && iname != input_name_) {
-                // only free if we “owned” it (i.e. it wasn’t the user’s output)
-                if (owned[iname]) {
-                free(buf[iname]);
+                float* iptr = buf[iname];
+                bool aliased = out_ptrs.count(iptr) != 0;
+                if (owned[iname] && !aliased) {
+                    free(iptr);
                 }
                 buf.erase(iname);
                 features_map.erase(iname);
                 owned.erase(iname);
             }
-        }
+      }
     }
     {
-    auto it = buf.find(output_name_);
-    if (it != buf.end()) {
-        float* final_buf = it->second;
-        if (final_buf != output_ptr) {
-            // recover dims
-            auto dims = shape_map_.at(output_name_);  // {B, Cout, H_out, W_out}
-            size_t B      = dims[0];
-            size_t Cout   = dims[1];
-            size_t H_out  = dims[2];
-            size_t W_out  = dims[3];
-
-            // element-wise copy, C-order final_buf -> Fortran-order output_ptr
-            for (size_t b = 0; b < B; ++b) {
-              for (size_t o = 0; o < Cout; ++o) {
-                for (size_t y = 0; y < H_out; ++y) {
-                  for (size_t x = 0; x < W_out; ++x) {
-                    // index into C-order buffer
-                    size_t c_idx = ((b * Cout + o) * H_out + y) * W_out + x;
-                    // index into Fortran-order buffer
-                    size_t f_idx = b
-                                 + B * (o
-                                 + Cout * (y
-                                 + H_out * x));
-                    output_ptr[f_idx] = final_buf[c_idx];
-                  }
-                }
-              }
+        auto it = buf.find(output_name_);
+        if (it != buf.end()) {
+            float* final_buf = it->second;
+            if (final_buf != output_ptr) {
+                // The internal layout for both MatMul and Conv is already the target Fortran layout.
+                const auto dims = shape_map_.at(output_name_); // e.g., {B,M} or {B,Cout,Hout,Wout}
+                size_t total = 1;
+                for (int d : dims) total *= size_t(d);
+                std::memcpy(output_ptr, final_buf, total * sizeof(float));
             }
         }
     }
-}
 }
