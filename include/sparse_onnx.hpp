@@ -80,10 +80,15 @@ struct ConvAttr {
   bool                 fuse_relu = false;
 };
 struct PoolAttr {
-  std::vector<int>   kernel_shape;  // {kH, kW}
-  std::vector<int>   pads;          // same convention
-  std::vector<int>   strides;       // {sH, sW}
-  bool               is_global;     // true for GlobalAveragePool
+  // hyperparams
+  int kH{1}, kW{1};
+  int sH{1}, sW{1};
+  int padH0{0}, padW0{0}, padH1{0}, padW1{0};
+  bool is_global{false};
+
+  // geometry (input/output)
+  uint32_t C{0}, H{0}, W{0};
+  uint32_t H_out{0}, W_out{0};
 };
 
 struct FlattenAttr {
@@ -166,7 +171,6 @@ private:
     std::unordered_map<std::string, std::vector<int>> flatten_src_shape_;
     // per‐op helpers, return a freshly‐allocated buffer of shape [rows×C]
     RunResult applyMatMul            (const MatMulAttr&   , const float* src, uint32_t B, float* out_buf = nullptr) const;
-    RunResult applyMatMulRelu        (const MatMulAttr&   , const float* src, uint32_t B, float* out_buf = nullptr) const;
     RunResult applyAdd               (const AddAttr&      , const float* in_A, const float* in_B, uint32_t features, uint32_t B, float* out_buf = nullptr) const;
     RunResult applyRelu              (const ActAttr&      , const float* src, uint32_t features, uint32_t B, float* out_buf = nullptr) const;
     RunResult applySigmoid           (const ActAttr&      , const float* src, uint32_t features, uint32_t B, float* out_buf = nullptr) const;

@@ -38,6 +38,14 @@ static void reorder_fc_columns_for_fortran_flatten(
     }
 }
 
+static void transpose_rc(const std::vector<float>& A, uint32_t R, uint32_t C,
+                         std::vector<float>& AT) {
+    AT.resize(size_t(R) * C);
+    for (uint32_t r = 0; r < R; ++r)
+        for (uint32_t c = 0; c < C; ++c)
+            AT[size_t(c)*R + r] = A[size_t(r)*C + c];
+}
+
 }
 
 
@@ -153,34 +161,65 @@ SparseOnnxModel::SparseOnnxModel(const std::string &onnx_path) {
         const auto &op   = node.op_type();
         const std::string &out = node.output(0);
 
-        // ——— Plain MatMul / Gemm ———
         if (op=="MatMul" || op=="Gemm") {
             auto itW = init_map.find(node.input(1));
             if (itW==init_map.end())
                 throw std::runtime_error("Weight '" + node.input(1) + "' not found");
-            auto *W_tp = itW->second;
+            const onnx::TensorProto* W_tp = itW->second;
 
-            std::vector<float> W_data;
-            parseTensor(*W_tp, W_data);
-            uint32_t M = W_tp->dims(0), N = W_tp->dims(1);
+            std::vector<float> W_raw;
+            parseTensor(*W_tp, W_raw);
+            if (W_tp->dims_size() != 2) throw std::runtime_error("FC weight must be 2D");
 
+            uint32_t d0 = (uint32_t)W_tp->dims(0);
+            uint32_t d1 = (uint32_t)W_tp->dims(1);
+
+            // Normalize to MxN = (out_features x in_features)
+            uint32_t M = 0, N = 0;
+            std::vector<float> W_MxN;  // row-major (M x N)
+
+            if (op=="MatMul") {
+                // ONNX MatMul: input is (B x N), weight is (N x M) -> output (B x M)
+                N = d0; M = d1;
+                transpose_rc(W_raw, /*R=*/N, /*C=*/M, /*out*/W_MxN); // -> (M x N)
+            } else { // Gemm
+                // Defaults: PyTorch tends to export with transB=1 and B=(M x N)
+                int64_t transB = 1; // ONNX default is 0, but PyTorch sets 1 for Linear
+                for (const auto& A : node.attribute()) {
+                    if (A.name()=="transB") transB = A.i();
+                }
+                if (transB == 1) {
+                    // W is already (M x N)
+                    M = d0; N = d1;
+                    W_MxN = std::move(W_raw);
+                } else {
+                    // W is (N x M) -> transpose to (M x N)
+                    N = d0; M = d1;
+                    transpose_rc(W_raw, /*R=*/N, /*C=*/M, /*out*/W_MxN);
+                }
+            }
+
+            // If input is output of a Flatten over 4D (B,C,H,W), permute columns once
             const std::string& mm_input_name = node.input(0);
             auto fit = flatten_src_shape_.find(mm_input_name);
             if (fit != flatten_src_shape_.end()) {
-                const auto& fsrc = fit->second;           // expect {B,C,H,W}
-                if (fsrc.size() == 4) {
+                const auto& fsrc = fit->second; // expect {B,C,H,W}
+                if (fsrc.size()==4) {
                     const uint32_t C = (uint32_t)fsrc[1];
                     const uint32_t H = (uint32_t)fsrc[2];
                     const uint32_t Wd= (uint32_t)fsrc[3];
-                    if (C * H * Wd == N) {
+                    if (C*H*Wd == N) {
                         std::vector<float> W_perm;
-                        reorder_fc_columns_for_fortran_flatten(W_data, M, C, H, Wd, W_perm);
-                        W_data.swap(W_perm);
+                        reorder_fc_columns_for_fortran_flatten(W_MxN, M, C, H, Wd, W_perm);
+                        W_MxN.swap(W_perm);
                     }
                 }
             }
-            Ellpack E = convert_to_ellpack(W_data.data(), M, N);
 
+            // Encode to ELLPACK (M x N)
+            Ellpack E = convert_to_ellpack(W_MxN.data(), M, N);
+
+            // Bias (Gemm may have it; MatMul typically not)
             std::vector<float> bdata;
             if (op=="Gemm" && node.input_size()>2) {
                 if (auto itB = init_map.find(node.input(2)); itB != init_map.end()) {
@@ -188,18 +227,20 @@ SparseOnnxModel::SparseOnnxModel(const std::string &onnx_path) {
                 }
             }
 
-            MatMulAttr matmul_attr{ std::move(E), nullptr, false };
+            MatMulAttr ma{ std::move(E), /*bias_ptr*/nullptr, /*fuse_relu*/false };
+            // If you use the “bias packing after fusion” approach, stash raw bias here instead.
+
             layers_.push_back({
                 LayerType::MatMul,
                 LayerOp::MatMul,
-                std::move(matmul_attr),
-                /* inputs: only the activation tensor */
+                std::move(ma),
                 { node.input(0) },
-                /* outputs: this node’s output */
                 { node.output(0) }
             });
+
+            // If you’re still doing your earlier bias packing: only push if non-empty
             if (!bdata.empty()) {
-                bias_plans.push_back({ layers_.size()-1, std::move(bdata) });
+                // … your bias_plans.push_back({ layers_.size()-1, std::move(bdata) });
             }
 
             shape_map_[out] = { int(batch_dim_), int(M) };
@@ -244,46 +285,46 @@ SparseOnnxModel::SparseOnnxModel(const std::string &onnx_path) {
             onnx::NodeProto const &n = node;
             PoolAttr p;
             p.is_global = (op=="GlobalAveragePool");
-            // read attributes…
-            for (auto &attr : n.attribute()) {
-                if      (attr.name()=="kernel_shape") p.kernel_shape = {attr.ints().Get(0), attr.ints().Get(1)};
-                else if (attr.name()=="strides")      p.strides      = {attr.ints().Get(0), attr.ints().Get(1)};
-                else if (attr.name()=="pads")         p.pads         = {attr.ints().Get(0), attr.ints().Get(1),
-                                                                          attr.ints().Get(2), attr.ints().Get(3)};
+
+            // Defaults
+            p.kH = p.kW = 1;
+            p.sH = p.sW = 1;
+            p.padH0 = p.padH1 = p.padW0 = p.padW1 = 0;
+
+            for (const auto &attr : n.attribute()) {
+                const auto &nm = attr.name();
+                if      (nm=="kernel_shape" && attr.ints_size()==2) { p.kH = int(attr.ints(0)); p.kW = int(attr.ints(1)); }
+                else if (nm=="strides"      && attr.ints_size()==2) { p.sH = int(attr.ints(0)); p.sW = int(attr.ints(1)); }
+                else if (nm=="pads"         && attr.ints_size()==4) {
+                    p.padH0 = int(attr.ints(0)); p.padW0 = int(attr.ints(1));
+                    p.padH1 = int(attr.ints(2)); p.padW1 = int(attr.ints(3));
+                }
+                // NOTE: ignoring dilations/ceil_mode; can add if you need
             }
-            LayerOp lop = (op=="MaxPool"
-                         ? LayerOp::MaxPool
-                         : LayerOp::GlobalAveragePool);
+
+            const auto in_shape = shape_map_.at(node.input(0)); // expect {B,C,H,W}
+            if (in_shape.size() != 4) throw std::runtime_error("Pool input must be 4D");
+            const int B  = in_shape[0];
+            p.C = (uint32_t)in_shape[1];
+            p.H = (uint32_t)in_shape[2];
+            p.W = (uint32_t)in_shape[3];
+
+            if (p.is_global) {
+                p.H_out = 1; p.W_out = 1;
+                shape_map_[out] = { B, int(p.C) };           // we expose (B,C) (Fortran) for GAP
+            } else {
+                p.H_out = (uint32_t)((int(p.H) + p.padH0 + p.padH1 - p.kH) / p.sH + 1);
+                p.W_out = (uint32_t)((int(p.W) + p.padW0 + p.padW1 - p.kW) / p.sW + 1);
+                shape_map_[out] = { B, int(p.C), int(p.H_out), int(p.W_out) };
+            }
+
             layers_.push_back({
                 LayerType::Pool,
-                lop,
+                (op=="MaxPool" ? LayerOp::MaxPool : LayerOp::GlobalAveragePool),
                 std::move(p),
-                /* pooling input */
                 { node.input(0) },
-                /* pooling output */
                 { node.output(0) }
             });
-            if (p.is_global) {
-                auto in_shape = shape_map_.at(node.input(0));
-                shape_map_[out] = { in_shape[0], in_shape[1] };
-            } else {
-                auto in_shape = shape_map_.at(node.input(0));  // {B, C, H, W}
-                int B      = in_shape[0];
-                int C      = in_shape[1];
-                int H      = in_shape[2];
-                int W      = in_shape[3];
-                int kH     = p.kernel_shape[0];
-                int kW     = p.kernel_shape[1];
-                int sH     = p.strides[0];
-                int sW     = p.strides[1];
-                int padH0  = p.pads[0], padH1 = p.pads[2];
-                int padW0  = p.pads[1], padW1 = p.pads[3];
-
-                int H_out = (H + padH0 + padH1 - kH) / sH + 1;
-                int W_out = (W + padW0 + padW1 - kW) / sW + 1;
-
-                shape_map_[out] = { B, C, H_out, W_out };
-            }
             continue;
         }
 
