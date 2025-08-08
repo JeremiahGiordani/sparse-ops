@@ -35,16 +35,6 @@ static Ellpack convert_to_ellpack_py(
     return convert_to_ellpack(data, m, n);
 }
 
-static SortedEllpack convert_to_sorted_ellpack_py(
-    py::array_t<float, py::array::c_style | py::array::forcecast> W)
-{
-    auto buf = W.request();
-    const float* data = static_cast<float*>(buf.ptr);
-    uint32_t m = buf.shape[0];
-    uint32_t n = buf.shape[1];  // m rows, n columns
-    return convert_to_sorted_ellpack(data, m, n, 32);
-}
-
 // ─────────────────────────────────────────────────────────────────────────────
 // Decode from ELLPACK format
 static py::array_t<float> decode_from_ellpack_py(const Ellpack& E)
@@ -101,15 +91,9 @@ PYBIND11_MODULE(sparseops_backend, m)
             return py::array_t<float>(shape, strides, E.Xt.ptr);
         });
 
-    py::class_<SortedEllpack>(m, "SortedEllpack")
-        .def_readonly("m", &SortedEllpack::m)
-        .def_readonly("n", &SortedEllpack::n);
-
     // — API surface —
     m.def("convert_to_ellpack", &convert_to_ellpack_py,
           "Convert dense NumPy matrix → ELLPACK handle");
-    m.def("convert_to_sorted_ellpack", &convert_to_sorted_ellpack_py,
-          "Convert dense NumPy matrix → Sorted ELLPACK handle");
     m.def("decode_from_ellpack", &decode_from_ellpack_py,
           "Convert ELLPACK handle → dense NumPy matrix");
 
