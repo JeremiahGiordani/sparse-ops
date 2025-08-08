@@ -153,69 +153,6 @@ SparseOnnxModel::SparseOnnxModel(const std::string &onnx_path) {
         const auto &op   = node.op_type();
         const std::string &out = node.output(0);
 
-        // ——— Fuse MatMul/Gemm → Relu ———
-        if ((op=="MatMul" || op=="Gemm")
-            && idx+1<graph.node_size()
-            && graph.node(idx+1).op_type()=="Relu")
-        {
-            // --- parse weight initializer ---
-            auto itW = init_map.find(node.input(1));
-            if (itW==init_map.end())
-                throw std::runtime_error("Weight '" + node.input(1) + "' not found");
-            auto *W_tp = itW->second;
-
-            // --- unpack weight data & dims ---
-            std::vector<float> W_data;
-            parseTensor(*W_tp, W_data);
-            uint32_t M = W_tp->dims(0), N = W_tp->dims(1);
-
-            const std::string& mm_input_name = node.input(0);
-            auto fit = flatten_src_shape_.find(mm_input_name);
-            if (fit != flatten_src_shape_.end()) {
-                const auto& fsrc = fit->second;           // expect {B,C,H,W}
-                if (fsrc.size() == 4) {
-                    const uint32_t C = (uint32_t)fsrc[1];
-                    const uint32_t H = (uint32_t)fsrc[2];
-                    const uint32_t Wd= (uint32_t)fsrc[3];
-                    if (C * H * Wd == N) {
-                        std::vector<float> W_perm;
-                        reorder_fc_columns_for_fortran_flatten(W_data, M, C, H, Wd, W_perm);
-                        W_data.swap(W_perm);
-                    }
-                }
-            }
-
-            // --- encode to ELLPACK ---
-            Ellpack E = convert_to_ellpack(W_data.data(), M, N);
-
-            // --- optional bias (only for Gemm) ---
-            std::vector<float> bdata;
-            if (op=="Gemm" && node.input_size()>2) {
-                if (auto itB = init_map.find(node.input(2)); itB != init_map.end()) {
-                    parseTensor(*itB->second, bdata);
-                }
-            }
-
-            // --- record layer + bias plan ---
-            MatMulAttr matmul_attr{ std::move(E), nullptr };
-
-            // build the fused layer
-            layers_.push_back({
-                LayerType::MatMul,               // category
-                LayerOp::MatMulRelu,             // specific op
-                std::move(matmul_attr),          // payload
-                /* inputs: only the activation tensor */ 
-                { node.input(0) },
-                /* outputs: the Relu’s single output */
-                { graph.node(idx+1).output(0) }
-            });
-            bias_plans.push_back({ layers_.size()-1, std::move(bdata) });
-
-            shape_map_[graph.node(idx+1).output(0)] = { int(batch_dim_), int(M) };
-            ++idx;  // skip the Relu node
-            continue;
-        }
-
         // ——— Plain MatMul / Gemm ———
         if (op=="MatMul" || op=="Gemm") {
             auto itW = init_map.find(node.input(1));
@@ -251,7 +188,7 @@ SparseOnnxModel::SparseOnnxModel(const std::string &onnx_path) {
                 }
             }
 
-            MatMulAttr matmul_attr{ std::move(E), nullptr };
+            MatMulAttr matmul_attr{ std::move(E), nullptr, false };
             layers_.push_back({
                 LayerType::MatMul,
                 LayerOp::MatMul,
@@ -525,6 +462,56 @@ SparseOnnxModel::SparseOnnxModel(const std::string &onnx_path) {
         }
         bptr += len;
     }
+
+    auto fuse_use_counts = [&](const std::vector<Layer>& Ls){
+        std::unordered_map<std::string,int> use;
+        for (auto& L : Ls) for (auto& in : L.inputs) use[in]++; 
+        return use;
+    };
+
+    auto try_fuse_relu_after = [&](size_t i, std::unordered_map<std::string,int>& use)->bool {
+        if (i+1 >= layers_.size()) return false;
+        Layer& A = layers_[i];
+        Layer& B = layers_[i+1];
+
+        // Producer must be MatMul or Conv
+        if (!(A.op == LayerOp::MatMul || A.op == LayerOp::Conv)) return false;
+        // Consumer must be Relu with a single input and single output
+        if (!(B.op == LayerOp::Relu && B.inputs.size()==1 && B.outputs.size()==1)) return false;
+        // And the Relu must take exactly A's output as its only input
+        if (B.inputs[0] != A.outputs[0]) return false;
+        // And A's output must not be used anywhere else
+        if (use[A.outputs[0]] != 1) return false;
+
+        // Fuse: set flag, redirect A's output name, erase B
+        if (A.op == LayerOp::MatMul) {
+            auto& ma = std::get<MatMulAttr>(A.attr);
+            ma.fuse_relu = true;
+        } else { // Conv
+            auto& ca = std::get<ConvAttr>(A.attr);
+            ca.fuse_relu = true;
+        }
+        // Decrement use-count for the input we’re consuming
+        use[B.inputs[0]]--;
+        // A now produces B's former output tensor
+        A.outputs[0] = B.outputs[0];
+
+        // Propagate shape_map (Relu is shape-preserving)
+        shape_map_[A.outputs[0]] = shape_map_.at(B.outputs[0]);
+
+        // Drop B
+        layers_.erase(layers_.begin() + (i+1));
+        return true;
+    };
+
+    auto use = fuse_use_counts(layers_);
+    for (size_t i = 0; i < layers_.size(); ++i) {
+        // Greedy local fusion: A (MatMul|Conv) + Relu
+        if (try_fuse_relu_after(i, use)) {
+            // Don't advance i; we might be able to fuse chains in future
+        }
+    }
+
 
     // Last MatMul layer index
     last_matmul_idx_ = 0;

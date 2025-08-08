@@ -48,11 +48,6 @@ void SparseOnnxModel::run(
             R = applyMatMul(m, ins[0], B, is_final ? output_ptr : nullptr);
             break;
           }
-          case LayerOp::MatMulRelu: {
-            auto &m = std::get<MatMulAttr>(L.attr);
-            R = applyMatMulRelu(m, ins[0], B, is_final ? output_ptr : nullptr);
-            break;
-          }
           case LayerOp::Add: {
             R = applyAdd(
                 std::get<AddAttr>(L.attr),

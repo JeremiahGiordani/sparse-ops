@@ -12,7 +12,7 @@
 #include <omp.h>
 #include <immintrin.h>
 
-
+template<bool FUSE_RELU>
 static void conv2d_implicit_im2col_fmajor(
     const ConvAttr& P,
     const float*    X,
@@ -71,7 +71,8 @@ static void conv2d_implicit_im2col_fmajor(
                             __m512 xv = _mm512_mask_loadu_ps(_mm512_setzero_ps(), mask, xblk);
                             yv = _mm512_fmadd_ps(_mm512_set1_ps(w), xv, yv);
                         }
-
+                        
+                        if constexpr (FUSE_RELU) yv = _mm512_max_ps(yv, _mm512_setzero_ps());
                         _mm512_mask_storeu_ps(yptr, mask, yv);
                     } else {
                         // AVX2/scalar fallback
@@ -95,6 +96,9 @@ static void conv2d_implicit_im2col_fmajor(
 
                             for (uint32_t l = 0; l < lanes; ++l) yptr[l] += w * xblk[l];
                         }
+                        if constexpr (FUSE_RELU) {
+                            for (uint32_t l = 0; l < lanes; ++l) yptr[l] = std::max(yptr[l], 0.0f);
+                        }
                     }
                 } // batch tiles
             } // co
@@ -111,16 +115,13 @@ static float* alloc_aligned(size_t elems) {
 }
 
 RunResult SparseOnnxModel::applyConv(const ConvAttr& c, const float* src, uint32_t B) const {
-    // Output is Fortran (B, Cout, H_out, W_out)
     const size_t elems = size_t(B) * c.Cout * c.H_out * c.W_out;
-    float* out = alloc_aligned(elems);
+    void* raw = nullptr;
+    posix_memalign(&raw, 64, elems*sizeof(float));
+    float* out = reinterpret_cast<float*>(raw);
 
-    // Run kernel
-    conv2d_implicit_im2col_fmajor(c, src, B, out);
+    if (c.fuse_relu) conv2d_implicit_im2col_fmajor<true >(c, src, B, out);
+    else             conv2d_implicit_im2col_fmajor<false>(c, src, B, out);
 
-    RunResult R;
-    R.data     = out;
-    R.features = c.Cout * c.H_out * c.W_out; // flattened feature count (for Flatten)
-    R.owned    = true;
-    return R;
+    return { out, c.Cout * c.H_out * c.W_out, /*owned=*/true };
 }

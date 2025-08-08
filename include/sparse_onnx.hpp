@@ -36,7 +36,7 @@ enum class LayerType {
 };  
 
 enum class LayerOp {  
-  MatMul, MatMulRelu,  
+  MatMul,  
   Relu, Sigmoid, Tanh,  
   Add,  
   MaxPool, GlobalAveragePool,  
@@ -48,6 +48,7 @@ enum class LayerOp {
 struct MatMulAttr {
   Ellpack    E;
   float*     bias_ptr;    // length = E.m
+  bool       fuse_relu = false;
 };
 
 struct KMap {
@@ -75,6 +76,8 @@ struct ConvAttr {
 
   // precomputed map from k∈[0..K) → (cin, dh, dw)
   std::vector<KMap>    kmap;
+
+  bool                 fuse_relu = false;
 };
 struct PoolAttr {
   std::vector<int>   kernel_shape;  // {kH, kW}
