@@ -35,6 +35,16 @@ static Ellpack convert_to_ellpack_py(
     return convert_to_ellpack(data, m, n);
 }
 
+static SortedEllpack convert_to_sorted_ellpack_py(
+    py::array_t<float, py::array::c_style | py::array::forcecast> W)
+{
+    auto buf = W.request();
+    const float* data = static_cast<float*>(buf.ptr);
+    uint32_t m = buf.shape[0];
+    uint32_t n = buf.shape[1];  // m rows, n columns
+    return convert_to_sorted_ellpack(data, m, n, 32);
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Decode from ELLPACK format
 static py::array_t<float> decode_from_ellpack_py(const Ellpack& E)
@@ -91,9 +101,15 @@ PYBIND11_MODULE(sparseops_backend, m)
             return py::array_t<float>(shape, strides, E.Xt.ptr);
         });
 
+    py::class_<SortedEllpack>(m, "SortedEllpack")
+        .def_readonly("m", &SortedEllpack::m)
+        .def_readonly("n", &SortedEllpack::n);
+
     // — API surface —
     m.def("convert_to_ellpack", &convert_to_ellpack_py,
           "Convert dense NumPy matrix → ELLPACK handle");
+    m.def("convert_to_sorted_ellpack", &convert_to_sorted_ellpack_py,
+          "Convert dense NumPy matrix → Sorted ELLPACK handle");
     m.def("decode_from_ellpack", &decode_from_ellpack_py,
           "Convert ELLPACK handle → dense NumPy matrix");
 
@@ -178,6 +194,46 @@ PYBIND11_MODULE(sparseops_backend, m)
             auto buf_Y = Y_arr.request();
 
             ellpack_matmul_batchmajor(
+                E,
+                static_cast<const float*>(buf_X.ptr),
+                B,
+                static_cast<const float*>(buf_bias.ptr),
+                static_cast<float*>(buf_Y.ptr)
+            );
+            return Y_arr;
+        },
+        R"pbdoc(
+            Multithreaded bilinear-diagonal mat-mul (ELLPACK format)
+
+            Computes Y = E × X + bias, where:
+              • E is an ELLPACK (m×n) matrix
+              • X is an n×C float32 array
+              • bias is length-m float32 vector (added to each column)
+              • Returns Y as an m×C float32 NumPy array
+        )pbdoc");
+
+    m.def("ellpack_matmul_sorted",
+        [](const SortedEllpack &E,
+           py::array_t<float, py::array::c_style | py::array::forcecast> X_arr,
+           py::array_t<float, py::array::c_style | py::array::forcecast> bias_arr) {
+            auto buf_X    = X_arr.request();
+            auto buf_bias = bias_arr.request();
+            if (buf_X.ndim != 2) {
+                throw std::runtime_error("X must be 2D (n × C)");
+            }
+            if ((uint32_t)buf_X.shape[1] != E.n) {
+                throw std::runtime_error("Input row count must equal E.n");
+            }
+            if ((uint32_t)buf_bias.size != E.m) {
+                throw std::runtime_error("Bias length must equal E.m");
+            }
+
+            uint32_t B = static_cast<uint32_t>(buf_X.shape[0]);
+            std::array<ssize_t,2> shape = { (ssize_t)E.m, (ssize_t)B };
+            py::array_t<float> Y_arr(shape);
+            auto buf_Y = Y_arr.request();
+
+            sorted_ellpack_matmul_microtx(
                 E,
                 static_cast<const float*>(buf_X.ptr),
                 B,

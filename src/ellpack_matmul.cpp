@@ -7,6 +7,101 @@
 #include <algorithm>  // std::fill, std::max
 #include <cstdint>  // uint32_t, uint64_t
 
+struct ScratchBlock {
+    float* buf;
+    ScratchBlock(uint32_t KB, uint32_t V) {
+        size_t bytes = size_t(KB) * V * sizeof(float);
+        void* p = nullptr;
+        posix_memalign(&p, 64, bytes);
+        buf = reinterpret_cast<float*>(p);
+    }
+    ~ScratchBlock() { free(buf); }
+};
+
+void sorted_ellpack_matmul_microtx(
+    const SortedEllpack& E,  // must have E.KB == KB
+    const float* X,          // [B x N], row-major
+    uint32_t B,
+    const float* bias,       // [M] or nullptr
+    float* Y                 // [M x B], row-major
+) {
+    const uint32_t m  = E.m;
+    const uint32_t n  = E.n;
+    const uint32_t NB = E.NB;
+    const uint32_t KB = E.KB;
+
+    const bool use_avx512 = true; // assume AVX-512 fast path; add feature detect if needed
+    const uint32_t V = 16;        // batch lanes per tile (fits AVX-512)
+
+    // 0) Initialize Y with bias (once per batch tile)
+    for (uint32_t cb = 0; cb < B; cb += V) {
+        const uint32_t lanes = std::min(V, B - cb);
+        const __mmask16 mask = (__mmask16(1u) << lanes) - 1u;
+
+        #pragma omp parallel for schedule(static)
+        for (uint32_t i = 0; i < m; ++i) {
+            float* yptr = Y + size_t(i) * B + cb;
+            if (bias) {
+                __m512 yv = _mm512_set1_ps(bias[i]);
+                _mm512_mask_storeu_ps(yptr, mask, yv);
+            } else {
+                // zero init
+                _mm512_mask_storeu_ps(yptr, mask, _mm512_setzero_ps());
+            }
+        }
+
+        // 1) Iterate column blocks (k0..k0+KB)
+        for (uint32_t b = 0, k0 = 0; b < NB; ++b, k0 += KB) {
+            const uint32_t k_extent = std::min<uint32_t>(KB, n - k0);
+
+            // 1a) Micro-transpose: X[cb:cb+lanes, k0:k0+k_extent] -> scratch[k_rel][lane]
+            ScratchBlock scratch(KB, V); // small (e.g., 16*16*4 = 1KB)
+            float* sbuf = scratch.buf;
+            // Scalar micro-transpose is surprisingly fast at this size; replace with AVX512 shuffles if needed.
+            for (uint32_t lane = 0; lane < lanes; ++lane) {
+                const float* xrow = X + size_t(cb + lane) * n + k0;
+                for (uint32_t k = 0; k < k_extent; ++k) {
+                    sbuf[size_t(k) * V + lane] = xrow[k];
+                }
+                // pad remaining [k_extent..KB) if last block (zeros)
+                for (uint32_t k = k_extent; k < KB; ++k) {
+                    sbuf[size_t(k) * V + lane] = 0.0f;
+                }
+            }
+            // If lanes < V, zero the tail lanes to keep masked loads trivial
+            for (uint32_t k = 0; k < KB; ++k) {
+                for (uint32_t lane = lanes; lane < V; ++lane) {
+                    sbuf[size_t(k) * V + lane] = 0.0f;
+                }
+            }
+
+            // 1b) Accumulate this block into Y. Each thread walks different rows.
+            #pragma omp parallel for schedule(static)
+            for (uint32_t i = 0; i < m; ++i) {
+                const size_t ptr_base = size_t(i) * (size_t(NB) + 1);
+                const uint32_t off = E.rowblk_ptr[ptr_base + b];
+                const uint32_t end = E.rowblk_ptr[ptr_base + b + 1];
+                if (off == end) continue; // this row has no nnz in this block
+
+                float* yptr = Y + size_t(i) * B + cb;
+                __m512 yv = _mm512_mask_loadu_ps(_mm512_setzero_ps(), ((__mmask16(1u)<<lanes)-1u), yptr);
+
+                // For all entries in this (row, block) slice: FMA with the already-transposed slab
+                for (uint32_t p = off; p < end; ++p) {
+                    const float    w  = E.Wd.ptr[p];
+                    const uint16_t kr = E.krel[p]; // 0..KB-1
+                    const float*   xk = sbuf + size_t(kr) * V; // contiguous V-lane vector
+                    __m512 xv = _mm512_loadu_ps(xk);
+                    yv = _mm512_fmadd_ps(_mm512_set1_ps(w), xv, yv);
+                }
+
+                _mm512_mask_storeu_ps(yptr, ((__mmask16(1u)<<lanes)-1u), yv);
+            }
+        }
+    }
+}
+
+
 void ellpack_matmul_batchmajor(
     const Ellpack& E,
     const float*   X,        // [B x N] row-major

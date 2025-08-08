@@ -5,6 +5,14 @@
 #include "utils.hpp"
 #include "ellpack_encoder.hpp"
 
+void sorted_ellpack_matmul_microtx(
+    const SortedEllpack& E,  // must have E.KB == KB
+    const float* X,          // [B x N], row-major
+    uint32_t B,
+    const float* bias,       // [M] or nullptr
+    float* Y                 // [M x B], row-major
+);
+
 void ellpack_matmul_batchmajor(
     const Ellpack& E,
     const float*   X,        // [B x N] row-major
