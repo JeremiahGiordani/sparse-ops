@@ -1,6 +1,17 @@
 #include "sparse_onnx.hpp"
 #include "iostream"
 
+#include <pybind11/pybind11.h>
+#include <pybind11/numpy.h>
+#include <vector>
+#include <cstdint>
+#include <cstdlib>
+#include <cstring>
+#include <algorithm>
+#include <stdexcept>
+#include <omp.h>
+#include <immintrin.h>
+
 RunResult SparseOnnxModel::applyConv(
     const ConvAttr &c,
     const float    *src,  // FORTRAN layout: (Cin*H_in*W_in) × B
@@ -74,31 +85,81 @@ const {
     return { dst_all, uint32_t(rows_out), true };
 }
 
+std::vector<KMap> build_kmap(uint32_t Cin, uint32_t kH, uint32_t kW,
+                                    uint32_t pad_h, uint32_t pad_w,
+                                    uint32_t dil_h=1, uint32_t dil_w=1) {
+    std::vector<KMap> map;
+    map.reserve(size_t(Cin) * kH * kW);
+    for (uint32_t c = 0; c < Cin; ++c) {
+        for (uint32_t kh = 0; kh < kH; ++kh) {
+            for (uint32_t kw = 0; kw < kW; ++kw) {
+                KMap m;
+                m.cin = c;
+                m.dh  = int32_t(-int32_t(pad_h) + int32_t(kh) * int32_t(dil_h));
+                m.dw  = int32_t(-int32_t(pad_w) + int32_t(kw) * int32_t(dil_w));
+                map.push_back(m);
+            }
+        }
+    }
+    return map;
+}
 
-#include <vector>
-#include <cstring>
+EllpackW encode_ellpack_from_weight(const float* W,
+                                           uint32_t Cout, uint32_t Cin,
+                                           uint32_t kH, uint32_t kW)
+{
+    const uint32_t K = Cin * kH * kW;
 
-// Performs a single 2D convolution via im2col + GEMM (padding=1, stride=1, no bias).
-// weight: pointer to weights of shape (Cout, Cin, kH, kW)
-// input:  pointer to input tensor of shape (B, Cin, H, W)
-// output: pointer to output tensor of shape (B, Cout, H, W)
-// B: batch size, Cin: input channels, H,W: height & width of input
-// Cout: output channels, kH,kW: kernel height & width
-#include <vector>
-#include <cstring>
-#include "ellpack_encoder.hpp"
-#include "ellpack_matmul.hpp"
+    // pass 1: count nnz per output channel (row)
+    std::vector<uint32_t> counts(Cout, 0);
+    uint32_t rmax = 0;
 
-// Performs a single 2D convolution via im2col + ELLPACK sparse GEMM (padding=1, stride=1, no bias).
-// weight: pointer to weights of shape (Cout, Cin, kH, kW)
-// input:  pointer to input tensor of shape (B, Cin, H, W)
-// output: pointer to output tensor of shape (B, Cout, H, W)
-// B: batch size, Cin: input channels, H,W: height & width of input
-// Cout: output channels, kH,kW: kernel height & width
-#include <vector>
-#include <cstring>
-#include "ellpack_encoder.hpp"
-#include "ellpack_matmul.hpp"
+    for (uint32_t co = 0; co < Cout; ++co) {
+        uint32_t cnt = 0;
+        // flatten in the same order as kmap (cin-major, then kh, kw)
+        for (uint32_t c = 0; c < Cin; ++c) {
+            for (uint32_t kh = 0; kh < kH; ++kh) {
+                for (uint32_t kw = 0; kw < kW; ++kw) {
+                    // weight layout from PyTorch: [Cout, Cin, kH, kW]
+                    size_t off = size_t(co)*Cin*kH*kW + size_t(c)*kH*kW + size_t(kh)*kW + kw;
+                    float v = W[off];
+                    if (v != 0.0f) ++cnt;
+                }
+            }
+        }
+        counts[co] = cnt;
+        rmax = std::max(rmax, cnt);
+    }
+
+    EllpackW E(Cout, K, rmax);
+    E.nnz = counts;
+    std::fill_n(E.Wd.ptr, size_t(Cout)*rmax, 0.0f);
+
+    // pass 2: fill
+    for (uint32_t co = 0; co < Cout; ++co) {
+        size_t base = size_t(co) * rmax;
+        uint32_t pos = 0;
+
+        uint32_t k = 0;
+        for (uint32_t c = 0; c < Cin; ++c) {
+            for (uint32_t kh = 0; kh < kH; ++kh) {
+                for (uint32_t kw = 0; kw < kW; ++kw, ++k) {
+                    size_t off = size_t(co)*Cin*kH*kW + size_t(c)*kH*kW + size_t(kh)*kW + kw;
+                    float v = W[off];
+                    if (v != 0.0f) {
+                        E.Wd.ptr[base + pos] = v;
+                        E.idx    [base + pos] = k; // index into KMap order
+                        ++pos;
+                    }
+                }
+            }
+        }
+        // remaining [pos..rmax) stay zero
+    }
+    return E;
+}
+
+
 
 // Performs a single 2D convolution via im2col + ELLPACK sparse GEMM (padding=1, stride=1, no bias).
 // weight: pointer to weights of shape (Cout, Cin, kH, kW) in standard C-order
@@ -106,74 +167,92 @@ const {
 // output: pointer to output tensor of shape (B, Cout, H, W) in C-order
 // B: batch size, Cin: input channels, H,W: height & width of input
 // Cout: output channels, kH,kW: kernel height & width
-void single_conv_layer(const float* weight,
-                       const float* input,
-                       float*       output,
-                       int          Cin,
-                       int          H,
-                       int          W,
-                       int          Cout,
-                       int          kH,
-                       int          kW) {
-    // Derived dims
-    const int pad_h = kH / 2;
-    const int pad_w = kW / 2;
-    const int H_out = H;
-    const int W_out = W;
-    const int N = H_out * W_out;
-    const int K = Cin * kH * kW;
-    const size_t M = static_cast<size_t>(Cout);
+void conv2d_implicit_im2col_fmajor(
+    const ConvPlan& P,
+    const float*    X,
+    uint32_t        B,
+    uint32_t        H, uint32_t W,
+    uint32_t        Hout, uint32_t Wout,
+    const float*    bias,   // nullptr if no bias
+    float*          Y
+) {
+    const uint32_t Cin = P.Cin;
+    const uint32_t Cout = P.Cout;
+    const uint32_t sh = P.stride_h, sw = P.stride_w;
+    const auto& E = P.W;
+    const auto& kmap = P.kmap;
 
-    // Zero-out output
-    std::fill(output, output + (size_t) M * N, 0.0f);
+    const bool avx512 = supports_avx512();
+    const uint32_t V = avx512 ? 16u : 8u;
 
-    // 1) Build dense weight matrix of shape [M x K]
-    std::vector<float> weight_mat(M * K);
-    std::memcpy(weight_mat.data(), weight, M * K * sizeof(float));
+    // Parallel over spatial tiles and output channels
+    #pragma omp parallel for collapse(2) schedule(static)
+    for (uint32_t ho = 0; ho < Hout; ++ho) {
+        for (uint32_t wo = 0; wo < Wout; ++wo) {
 
-    // 2) Convert weight to ELLPACK
-    Ellpack E = convert_to_ellpack(weight_mat.data(), static_cast<uint32_t>(M), static_cast<uint32_t>(K));
+            auto y_tile_base = [&](uint32_t co)->float* {
+                // Fortran (B,Cout,Hout,Wout): index(b,c,ho,wo) = b + B*(c + Cout*(ho + Hout*wo))
+                size_t base = size_t(B) * ( co + size_t(Cout)*( ho + size_t(Hout)*wo ) );
+                return Y + base;
+            };
 
-    // Allocate buffers
-    std::vector<float> col_buf(K * N);
-    std::vector<float> out_mat(M * N);
+            for (uint32_t co = 0; co < Cout; ++co) {
+                const size_t row_base = size_t(co) * E.r;
+                const uint32_t cnt = E.nnz[co];
 
-    // For each image in batch
-    // for (int b = 0; b < B; ++b) {
-        // Build im2col buffer: size K x N
-        for (int p = 0; p < K; ++p) {
-            int c = p / (kH * kW);
-            int rem = p % (kH * kW);
-            int kh = rem / kW;
-            int kw = rem % kW;
-            size_t base_in = (static_cast<size_t> (Cin) + c) * H * W;
-            for (int n = 0; n < N; ++n) {
-                int y = n / W_out;
-                int x = n % W_out;
-                int in_y = y + kh - pad_h;
-                int in_x = x + kw - pad_w;
-                float val = 0.0f;
-                if (in_y >= 0 && in_y < H && in_x >= 0 && in_x < W) {
-                    val = input[base_in + in_y * W + in_x];
-                }
-                col_buf[static_cast<size_t>(p) * N + n] = val;
-            }
-        }
+                for (uint32_t cb = 0; cb < B; cb += V) {
+                    const uint32_t lanes = std::min(V, B - cb);
+                    const __mmask16 mask = (__mmask16(1) << lanes) - 1;
 
-        // 3) Sparse GEMM via ELLPACK: [M x K] * [K x N] -> [M x N]
-        ellpack_matmul(E, col_buf.data(), static_cast<uint32_t>(N), nullptr, output);
+                    float* yptr = y_tile_base(co) + cb;
 
-        // std::memcpy(output, out_mat.data(), M * N * sizeof(float));
+                    if (avx512) {
+                        __m512 yv = bias ? _mm512_set1_ps(bias[co]) : _mm512_setzero_ps();
 
-        // 4) Scatter out_mat into output tensor
-        // for (size_t o = 0; o < M; ++o) {
-        //     for (int n = 0; n < N; ++n) {
-        //         int y = n / W_out;
-        //         int x = n % W_out;
-        //         size_t out_idx = ((static_cast<size_t>(b) * M + o) * H_out + y) * W_out + x;
-        //         output[out_idx] = out_mat[o * N + n];
-        //     }
-        // }
-    // }
+                        for (uint32_t j = 0; j < cnt; ++j) {
+                            const float w = E.Wd.ptr[row_base + j];
+                            const uint32_t k = E.idx[row_base + j];
+                            const auto km = kmap[k];
+
+                            const int32_t hin = int32_t(ho)*int32_t(sh) + km.dh;
+                            const int32_t win = int32_t(wo)*int32_t(sw) + km.dw;
+                            if ((unsigned)hin >= H || (unsigned)win >= W) continue;
+
+                            // X offset: (B,Cin,H,W)_F → b + B*(cin + Cin*(hin + H*win))
+                            const size_t xoff = size_t(B) * ( km.cin + size_t(Cin)*( hin + size_t(H)*win ) );
+                            const float* xblk = X + xoff + cb; // contiguous across B
+
+                            __m512 xv = _mm512_mask_loadu_ps(_mm512_setzero_ps(), mask, xblk);
+                            yv = _mm512_fmadd_ps(_mm512_set1_ps(w), xv, yv);
+                        }
+
+                        _mm512_mask_storeu_ps(yptr, mask, yv);
+                    } else {
+                        // AVX2/scalar fallback
+                        if (bias) {
+                            for (uint32_t l = 0; l < lanes; ++l) yptr[l] = bias[co];
+                        } else {
+                            for (uint32_t l = 0; l < lanes; ++l) yptr[l] = 0.0f;
+                        }
+
+                        for (uint32_t j = 0; j < cnt; ++j) {
+                            const float w = E.Wd.ptr[row_base + j];
+                            const uint32_t k = E.idx[row_base + j];
+                            const auto km = kmap[k];
+
+                            const int32_t hin = int32_t(ho)*int32_t(sh) + km.dh;
+                            const int32_t win = int32_t(wo)*int32_t(sw) + km.dw;
+                            if ((unsigned)hin >= H || (unsigned)win >= W) continue;
+
+                            const size_t xoff = size_t(B) * ( km.cin + size_t(Cin)*( hin + size_t(H)*win ) );
+                            const float* xblk = X + xoff + cb;
+                            for (uint32_t l = 0; l < lanes; ++l)
+                                yptr[l] += w * xblk[l];
+                        }
+                    } // end AVX512/else
+                } // batch tiles
+            } // co
+        } // wo
+    } // ho
 }
 

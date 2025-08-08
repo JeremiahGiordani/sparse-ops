@@ -13,6 +13,7 @@
 #include <cstring>
 #include <limits>
 #include <cstdlib>
+#include <immintrin.h>
 
 #include "ellpack_matmul.hpp"       // ellpack_matmul
 #include "ellpack_encoder.hpp"   // for Ellpack
@@ -22,6 +23,38 @@
 /// C++ interface for loading an ONNX model and running inference
 /// via pre-encoded ELLPACK sparse kernels, with fixed (static) batch size
 /// inferred from the model’s input shape.
+
+struct EllpackW {
+    uint32_t m{0};   // Cout
+    uint32_t n{0};   // K
+    uint32_t r{0};   // max nnz per row
+    AlignedBuffer Wd;                // m*r floats
+    std::vector<uint32_t> idx;       // m*r indices into [0..K)
+    std::vector<uint32_t> nnz;       // m counts
+
+    EllpackW() = default;
+    EllpackW(uint32_t _m, uint32_t _n, uint32_t _r)
+      : m(_m), n(_n), r(_r), Wd(size_t(_m)*_r), idx(size_t(_m)*_r, 0), nnz(_m, 0) {}
+};
+
+struct KMap { uint32_t cin; int32_t dh; int32_t dw; };
+
+// Conv plan we return to Python
+struct ConvPlan {
+    // geometry
+    uint32_t Cin{0}, Cout{0}, kH{0}, kW{0};
+    uint32_t stride_h{1}, stride_w{1};
+    uint32_t pad_h{0}, pad_w{0};
+    // weights + kernel-position map
+    EllpackW W;
+    std::vector<KMap> kmap;
+
+    ConvPlan() = default;
+    ConvPlan(ConvPlan&&) = default;
+    ConvPlan& operator=(ConvPlan&&) = default;
+    ConvPlan(const ConvPlan&) = delete;
+    ConvPlan& operator=(const ConvPlan&) = delete;
+};
 
 /// Supported layer types in the ONNX graph.
 enum class LayerType {  
