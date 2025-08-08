@@ -93,8 +93,10 @@ target_include_directories(onnx_protos PUBLIC
 add_library(sparseops_backend MODULE
   src/bindings.cpp
   src/ellpack_encoder.cpp
+  src/cbcoo_encoder.cpp
   src/ellpack_matvec.cpp
   src/ellpack_matmul.cpp
+  src/cbcoo_matmul.cpp
   src/activations.cpp
   src/sparse_onnx.cpp
   src/model_run.cpp
