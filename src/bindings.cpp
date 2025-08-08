@@ -12,6 +12,17 @@
 
 namespace py = pybind11;
 
+void single_conv_layer(const float* weight,
+                       const float* input,
+                       float*       output,
+                    //    int          B,
+                       int          Cin,
+                       int          H,
+                       int          W,
+                       int          Cout,
+                       int          kH,
+                       int          kW);
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Encode to ELLPACK format
 static Ellpack convert_to_ellpack_py(
@@ -145,6 +156,139 @@ PYBIND11_MODULE(sparseops_backend, m)
               • Returns Y as an m×C float32 NumPy array
         )pbdoc");
 
+    m.def("ellpack_matmul_batchmajor",
+        [](const Ellpack &E,
+           py::array_t<float, py::array::c_style | py::array::forcecast> X_arr,
+           py::array_t<float, py::array::c_style | py::array::forcecast> bias_arr) {
+            auto buf_X    = X_arr.request();
+            auto buf_bias = bias_arr.request();
+            if (buf_X.ndim != 2) {
+                throw std::runtime_error("X must be 2D (n × C)");
+            }
+            if ((uint32_t)buf_X.shape[1] != E.n) {
+                throw std::runtime_error("Input row count must equal E.n");
+            }
+            if ((uint32_t)buf_bias.size != E.m) {
+                throw std::runtime_error("Bias length must equal E.m");
+            }
+
+            uint32_t B = static_cast<uint32_t>(buf_X.shape[0]);
+            std::array<ssize_t,2> shape = { (ssize_t)E.m, (ssize_t)B };
+            py::array_t<float> Y_arr(shape);
+            auto buf_Y = Y_arr.request();
+
+            ellpack_matmul_batchmajor(
+                E,
+                static_cast<const float*>(buf_X.ptr),
+                B,
+                static_cast<const float*>(buf_bias.ptr),
+                static_cast<float*>(buf_Y.ptr)
+            );
+            return Y_arr;
+        },
+        R"pbdoc(
+            Multithreaded bilinear-diagonal mat-mul (ELLPACK format)
+
+            Computes Y = E × X + bias, where:
+              • E is an ELLPACK (m×n) matrix
+              • X is an n×C float32 array
+              • bias is length-m float32 vector (added to each column)
+              • Returns Y as an m×C float32 NumPy array
+        )pbdoc");
+
+    // m.def("conv",
+    //     [](py::array_t<float> weight, py::array_t<float, py::array::f_style | py::array::forcecast> input) {
+    //         // 1) buffer checks
+    //         auto bw = weight.request(), bx = input.request();
+    //         if (bw.ndim != 4) throw std::runtime_error("weight must be shape (Cout,Cin,kH,kW)");
+    //         if (bx.ndim != 4) throw std::runtime_error("input must be shape (B,Cin,H,W)");
+
+    //         // 2) unpack dims
+    //         int Cout = bw.shape[0];
+    //         int Cin  = bw.shape[1];
+    //         int kH   = bw.shape[2];
+    //         int kW   = bw.shape[3];
+
+    //         int B = bx.shape[0];
+    //         int H = bx.shape[2];
+    //         int W = bx.shape[3];
+
+    //         // 3) allocate output (B, Cout, H, W)
+    //         std::vector<ssize_t> shape { B, Cout, H, W };
+    //         // strides (in bytes): b=1, c=B, h=B*Cout, w=B*Cout*H
+    //         ssize_t itemsize = sizeof(float);
+    //         std::vector<ssize_t> strides(4);
+    //         strides[0] = itemsize;
+    //         strides[1] = strides[0] * shape[0];
+    //         strides[2] = strides[1] * shape[1];
+    //         strides[3] = strides[2] * shape[2];
+    //         py::array_t<float, py::array::f_style> out(
+    //             shape,
+    //             strides
+    //         );
+    //         auto bo = out.request();
+
+    //         // 4) call your impl
+    //         single_conv_layer(
+    //             static_cast<float*>(bw.ptr),
+    //             static_cast<float*>(bx.ptr),
+    //             static_cast<float*>(bo.ptr),
+    //             B, Cin, H, W, Cout, kH, kW
+    //         );
+
+    //         return out;
+    //     },
+    //     py::arg("weight"),
+    //     py::arg("input"),
+    //     "Run a single 2D convolution (no bias, padding=1) on a float tensor"
+    // );
+
+    m.def("conv",
+        [](py::array_t<float> weight, py::array_t<float, py::array::f_style | py::array::forcecast> input) {
+            // 1) buffer checks
+            auto bw = weight.request(), bx = input.request();
+            if (bw.ndim != 4) throw std::runtime_error("weight must be shape (Cout,Cin,kH,kW)");
+            if (bx.ndim != 3) throw std::runtime_error("input must be shape (B,Cin,H,W)");
+
+            // 2) unpack dims
+            int Cout = bw.shape[0];
+            int Cin  = bw.shape[1];
+            int kH   = bw.shape[2];
+            int kW   = bw.shape[3];
+
+            int H = bx.shape[1];
+            int W = bx.shape[2];
+
+            // 3) allocate output (B, Cout, H, W)
+            std::vector<ssize_t> shape { Cout, H, W };
+            // strides (in bytes): b=1, c=B, h=B*Cout, w=B*Cout*H
+            ssize_t itemsize = sizeof(float);
+            std::vector<ssize_t> strides(3);
+            strides[0] = itemsize;
+            strides[1] = strides[0] * shape[0];
+            strides[2] = strides[1] * shape[1];
+            // strides[3] = strides[2] * shape[2];
+            py::array_t<float, py::array::f_style> out(
+                shape,
+                strides
+            );
+            auto bo = out.request();
+
+            // 4) call your impl
+            single_conv_layer(
+                static_cast<float*>(bw.ptr),
+                static_cast<float*>(bx.ptr),
+                static_cast<float*>(bo.ptr),
+                 Cin, H, W, Cout, kH, kW
+            );
+
+            return out;
+        },
+        py::arg("weight"),
+        py::arg("input"),
+        "Run a single 2D convolution (no bias, padding=1) on a float tensor"
+    );
+
     // — Sparse ONNX model —
     py::class_<SparseOnnxModel>(m, "SparseOnnxModel")
         .def(py::init<const std::string&>(),
@@ -157,17 +301,30 @@ PYBIND11_MODULE(sparseops_backend, m)
                 uint32_t C = static_cast<uint32_t>(buf.shape[0]);
                 const float* input_ptr = static_cast<const float*>(buf.ptr);
 
-                uint32_t M = model.output_rows();
-                std::array<ssize_t,2> out_shape = { (ssize_t)M, (ssize_t)C };
-                py::array_t<float> Y(out_shape);
-                auto bufY = Y.request();
+                std::vector<size_t> dims = model.output_shape();
+                std::vector<ssize_t> shape(dims.begin(), dims.end());
+
+                // 3) Compute Fortran strides (in bytes)
+                std::vector<ssize_t> strides(shape.size());
+                ssize_t itemsize = sizeof(float);
+                strides[0] = itemsize;
+                for (size_t i = 1; i < shape.size(); ++i) {
+                    strides[i] = strides[i-1] * shape[i-1];
+                }
+
+                // 4) Allocate an f_style array with those strides
+                py::array_t<float, py::array::f_style> Y(
+                    /* shape  = */ shape,
+                    /* strides= */ strides
+                );
+                auto by = Y.request();
+
+                // 5) Run the model into the Fortran buffer
                 model.run(input_ptr,
-                          C,
-                          static_cast<float*>(bufY.ptr));
+                            C,
+                            static_cast<float*>(by.ptr));
+
                 return Y;
             },
-            "Run inference on input X (shape n×C), returns output (m×C)")
-        .def("output_rows",
-             &SparseOnnxModel::output_rows,
-             "Number of rows in the final output (m)");
+            "Run inference on input X (shape n×C), returns output (m×C)");
 }

@@ -35,3 +35,16 @@ def matmul(E: sparseops_backend.Ellpack, X: np.ndarray, bias: np.ndarray) -> np.
         (m,) torch.Tensor
     """
     return sparseops_backend.ellpack_matmul(E, X, bias)
+
+
+def matmul_batchmajor(E: sparseops_backend.Ellpack, X: np.ndarray, bias: np.ndarray) -> np.ndarray:
+    """
+    Bilinear diagonal matrix multiplication using the C++ backend.
+    Args:
+        E: Ellpack object (m, n)
+        X: XtDense object OR (n,) np.ndarray
+        bias: (m,) torch.Tensor
+    Returns:
+        (m,) torch.Tensor
+    """
+    return sparseops_backend.ellpack_matmul_batchmajor(E, X, bias)

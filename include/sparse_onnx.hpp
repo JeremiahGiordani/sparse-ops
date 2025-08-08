@@ -122,7 +122,13 @@ public:
     void run(const float* input, uint32_t B, float* output) const;
 
     /// Number of rows (m) in the final output (i.e., output_dim).
-    uint32_t output_rows() const { return output_rows_; }
+    std::vector<size_t> output_shape() const {
+        auto &int_dims = shape_map_.at(output_name_);    // vector<int>
+        std::vector<size_t> dims;
+        dims.reserve(int_dims.size());
+        for (int d : int_dims) dims.push_back(static_cast<size_t>(d));
+        return dims;
+    }
 
 private:
 

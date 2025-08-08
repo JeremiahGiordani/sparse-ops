@@ -427,12 +427,15 @@ SparseOnnxModel::SparseOnnxModel(const std::string &onnx_path) {
                             int ih = base_h + kh * c.dilations[0];
                             for (int kw = 0; kw < kW; ++kw) {
                                 int iw = base_w + kw * c.dilations[1];
-                                size_t offset = 0;
+                                size_t in_features = size_t(Cin) * H_in * W_in;
+                                size_t offset;
                                 if ((unsigned)ih < (unsigned)H_in &&
                                     (unsigned)iw < (unsigned)W_in) {
                                     offset = channel_off
-                                        + size_t(ih) * W_in
-                                        + size_t(iw);
+                                            + size_t(ih) * W_in
+                                            + size_t(iw);
+                                } else {
+                                    offset = in_features;
                                 }
                                 c.patch_indices[idx++] = offset;
                             }
@@ -502,17 +505,6 @@ SparseOnnxModel::SparseOnnxModel(const std::string &onnx_path) {
     }
 
     // Number of output rows = m of the final MatMul
-    output_rows_ = 0;
-    for (auto it = layers_.rbegin(); it != layers_.rend(); ++it) {
-        if (it->type == LayerType::MatMul) {
-            auto &ma = std::get<MatMulAttr>(it->attr);
-            output_rows_ = ma.E.m;
-            break;
-        }
-    }
-    if (output_rows_ == 0) {
-        throw std::runtime_error("No MatMul layer found for output dimension");
-    }
 
     bool use_avx512   = supports_avx512();
     simd_w   = use_avx512 ? 16u : 8u;

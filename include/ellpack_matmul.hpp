@@ -5,6 +5,14 @@
 #include "utils.hpp"
 #include "ellpack_encoder.hpp"
 
+void ellpack_matmul_batchmajor(
+    const Ellpack& E,
+    const float*   X,        // [B x N] row-major
+    uint32_t       B,        // batch size
+    const float*   bias,     // [M] or nullptr
+    float*         Y         // [M x B] row-major
+);
+
 /// ellpack_matmul: Y = E × X  + bias
 /// - E: m×n ELLPACK representation
 /// - X: n×C input matrix (col‑major or row‑major, see notes)
