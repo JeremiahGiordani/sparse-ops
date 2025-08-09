@@ -473,6 +473,11 @@ SparseOnnxModel::SparseOnnxModel(const std::string &onnx_path) {
                 std::move(kmap)
             };
 
+            cattr.use_rbm = (Cout >= 32 && K >= 64);
+            if (cattr.use_rbm) {
+                cattr.rbm = build_rbm_from_ellpack(cattr.E, cattr.bias_ptr, /*Ct_max=*/8);
+            }
+
             // 10) Push layer + record output shape ({B, Cout, H_out, W_out})
             const std::string x_name = resolve(node.input(0));
             layers_.push_back({

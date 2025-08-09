@@ -1,5 +1,6 @@
 #include "sparse_onnx.hpp"
-#include "iostream"
+#include "sparse_onnx.hpp"
+#include "conv_kernels.hpp"
 
 #include <pybind11/pybind11.h>
 #include <pybind11/numpy.h>
@@ -117,11 +118,16 @@ static float* alloc_aligned(size_t elems) {
 RunResult SparseOnnxModel::applyConv(const ConvAttr& c, const float* src, uint32_t B) const {
     const size_t elems = size_t(B) * c.Cout * c.H_out * c.W_out;
     void* raw = nullptr;
-    posix_memalign(&raw, 64, elems*sizeof(float));
+    if (posix_memalign(&raw, 64, elems * sizeof(float)) != 0) throw std::bad_alloc();
     float* out = reinterpret_cast<float*>(raw);
 
-    if (c.fuse_relu) conv2d_implicit_im2col_fmajor<true >(c, src, B, out);
-    else             conv2d_implicit_im2col_fmajor<false>(c, src, B, out);
-
+    if (c.use_rbm) {
+        // New path: RBM with implicit addressing + optional fused ReLU
+        conv2d_rbm_fmajor_implicit(c, src, B, out);
+    } else {
+        // Existing fast path for small Cout/K
+        if (c.fuse_relu) conv2d_implicit_im2col_fmajor<true >(c, src, B, out);
+        else             conv2d_implicit_im2col_fmajor<false>(c, src, B, out);
+    }
     return { out, c.Cout * c.H_out * c.W_out, /*owned=*/true };
 }

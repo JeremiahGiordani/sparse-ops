@@ -19,6 +19,7 @@
 #include "ellpack_matmul.hpp"       // ellpack_matmul
 #include "ellpack_encoder.hpp"   // for Ellpack
 #include "activations.hpp"          // relu_inplace, sigmoid_inplace, tanh_inplace
+#include "rbm_conv.hpp"
 
 /// \file sparse_onnx.hpp
 /// C++ interface for loading an ONNX model and running inference
@@ -78,6 +79,8 @@ struct ConvAttr {
   std::vector<KMap>    kmap;
 
   bool                 fuse_relu = false;
+  RBMPlan              rbm;          // optional; empty if we chose not to build
+  bool                 use_rbm{false};
 };
 struct PoolAttr {
   // hyperparams

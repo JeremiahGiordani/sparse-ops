@@ -104,6 +104,8 @@ add_library(sparseops_backend MODULE
   src/layers/flatten.cpp
   src/layers/matmul.cpp
   src/layers/pool.cpp
+  src/layers/conv_kernels.cpp
+  src/layers/rbm_conv.cpp
 )
 set_target_properties(sparseops_backend PROPERTIES
   PREFIX ""
