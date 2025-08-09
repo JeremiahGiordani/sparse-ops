@@ -69,19 +69,27 @@ struct ConvAttr {
   uint32_t             stride_h = 1, stride_w = 1;
   uint32_t             pad_h = 0, pad_w = 0;
   uint32_t             dil_h = 1, dil_w = 1;
-  uint32_t             group = 1; // (only 1 supported for now)
+  uint32_t             group = 1;
 
   // spatial geometry
   uint32_t             H_in = 0, W_in = 0;
   uint32_t             H_out = 0, W_out = 0;
 
-  // precomputed map from k∈[0..K) → (cin, dh, dw)
+  // precomputed (cin,dh,dw) for K
   std::vector<KMap>    kmap;
 
+  // NEW: precomputed offsets for implicit im2col (size = K * (H_out*W_out))
+  // off = cin*H_in*W_in + ih*W_in + iw; or sentinel_off = Cin*H_in*W_in if out-of-bounds
+  std::vector<size_t>  patch_indices;
+  size_t               sentinel_off = 0;
+
+  // fusions / alt paths
   bool                 fuse_relu = false;
-  RBMPlan              rbm;          // optional; empty if we chose not to build
+  RBMPlan              rbm;
   bool                 use_rbm{false};
 };
+
+
 struct PoolAttr {
   // hyperparams
   int kH{1}, kW{1};

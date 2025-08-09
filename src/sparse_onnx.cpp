@@ -473,6 +473,32 @@ SparseOnnxModel::SparseOnnxModel(const std::string &onnx_path) {
                 std::move(kmap)
             };
 
+            const uint32_t P = cattr.H_out * cattr.W_out;
+            cattr.sentinel_off = size_t(cattr.Cin) * cattr.H_in * cattr.W_in;
+            cattr.patch_indices.resize(size_t(K) * P);
+
+            for (uint32_t ph = 0; ph < cattr.H_out; ++ph) {
+                for (uint32_t pw = 0; pw < cattr.W_out; ++pw) {
+                    const uint32_t pidx  = ph * cattr.W_out + pw;
+                    const size_t   pbase = size_t(pidx) * K;
+                    for (uint32_t k = 0; k < K; ++k) {
+                        const auto &km = cattr.kmap[k];     // {cin, dh, dw}
+                        const int ih = int(ph) * int(cattr.stride_h) + km.dh;
+                        const int iw = int(pw) * int(cattr.stride_w) + km.dw;
+
+                        size_t offF; // Fortran-major over (C,H,W): c + C*(h + H*w)
+                        if ((unsigned)ih < (unsigned)cattr.H_in &&
+                            (unsigned)iw < (unsigned)cattr.W_in) {
+                            offF = size_t(km.cin)
+                                + size_t(cattr.Cin) * ( size_t(ih) + size_t(cattr.H_in) * size_t(iw) );
+                        } else {
+                            offF = cattr.sentinel_off; // one-past: indicates zero stripe
+                        }
+                        cattr.patch_indices[pbase + k] = offF;
+                    }
+                }
+            }
+
             cattr.use_rbm = (Cout >= 32 && K >= 64);
             if (cattr.use_rbm) {
                 cattr.rbm = build_rbm_from_ellpack(cattr.E, cattr.bias_ptr, /*Ct_max=*/8);

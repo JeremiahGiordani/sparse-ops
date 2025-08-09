@@ -10,6 +10,18 @@ static inline size_t off4_BCHW(uint32_t B, uint32_t C, uint32_t H,
     return size_t(B) * ( c + size_t(C) * ( h + size_t(H) * w ) );
 }
 
+static inline uint32_t choose_patch_tile(uint32_t K, uint32_t B, uint32_t P) {
+    // Target ~64 KiB working set for X_tile = K * (B*P_t) * 4 bytes
+    const size_t target = 64 * 1024;
+    size_t Pt = target / (std::max<size_t>(1, size_t(K) * B) * sizeof(float));
+    if (Pt < 16) Pt = 16;
+    if (Pt > P)  Pt = P;
+    // round down to multiple of 8 to be vector-friendly
+    Pt -= (Pt % 8);
+    if (Pt == 0) Pt = std::min<size_t>(P, 8);
+    return (uint32_t)Pt;
+}
+
 void conv2d_rbm_fmajor_implicit(
     const ConvAttr&  c,
     const float*     src,    // (B,C,H,W)_F
@@ -91,4 +103,77 @@ void conv2d_rbm_fmajor_implicit(
             } // blocks
         } // pw
     } // ph
+}
+
+
+void conv2d_tiled_im2col_fmajor(
+    const ConvAttr& c,
+    const float*    src,   // (B,C,H,W)_F
+    uint32_t        B,
+    float*          dst    // (B,Cout,Ho,Wo)_F
+) {
+    const uint32_t C   = c.Cin;
+    const uint32_t H   = c.H_in;
+    const uint32_t W   = c.W_in;
+    const uint32_t Ho  = c.H_out;
+    const uint32_t Wo  = c.W_out;
+    const uint32_t M   = c.Cout;
+    const uint32_t K   = c.Cin * c.kH * c.kW;
+    const uint32_t P   = Ho * Wo;
+
+    // Choose tile
+    const uint32_t Pt = choose_patch_tile(K, B, P);
+    const uint32_t simd_w = supports_avx512() ? 16u : 8u;
+    // We'll always call the masked variant of ELLPACK; it's robust for any C_tile.
+    const bool fuse_relu = c.fuse_relu;
+
+    // Per-thread scratch
+    #pragma omp parallel
+    {
+        AlignedBuffer X_tile(size_t(K) * size_t(Pt) * B);  // K x C_tile
+        AlignedBuffer Y_tile(size_t(M) * size_t(Pt) * B);  // M x C_tile
+
+        #pragma omp for schedule(static)
+        for (uint32_t p0 = 0; p0 < P; p0 += Pt) {
+            const uint32_t plen = std::min(Pt, P - p0);
+            const uint32_t C_tile = plen * B;
+
+            // 1) Pack X_tile: K rows, each has C_tile contiguous columns
+            for (uint32_t k = 0; k < K; ++k) {
+                float* xrow = X_tile.ptr + size_t(k) * C_tile;
+                // walk patches in this tile
+                for (uint32_t t = 0; t < plen; ++t) {
+                    const uint32_t p = p0 + t;
+                    const size_t off = c.patch_indices[size_t(p) * K + k];
+                    float* dstp = xrow + size_t(t) * B;
+                    if (off == c.sentinel_off) {
+                        std::memset(dstp, 0, B * sizeof(float));
+                    } else {
+                        const float* srcp = src + off * B;
+                        std::memcpy(dstp, srcp, B * sizeof(float));
+                    }
+                }
+            }
+
+            // 2) GEMM: (M x K) * (K x C_tile) -> (M x C_tile)
+            if (fuse_relu) {
+                ellpack_matmul_fused<true, true>(c.E, X_tile.ptr, C_tile, c.bias_ptr, Y_tile.ptr);
+            } else {
+                ellpack_matmul_fused<true, false>(c.E, X_tile.ptr, C_tile, c.bias_ptr, Y_tile.ptr);
+            }
+
+            // 3) Scatter Y_tile into (B,Cout,Ho,Wo)_F; copy B-contiguous chunks
+            for (uint32_t m = 0; m < M; ++m) {
+                const float* yrow = Y_tile.ptr + size_t(m) * C_tile;
+                for (uint32_t t = 0; t < plen; ++t) {
+                    const uint32_t p = p0 + t;
+                    const uint32_t ph = p / Wo;
+                    const uint32_t pw = p % Wo;
+                    float* ydst = dst + off4_BCHW(B, M, Ho, m, ph, pw);
+                    // copy B contiguous values from yrow[(t*B) .. (t*B+B)]
+                    std::memcpy(ydst, yrow + size_t(t) * B, B * sizeof(float));
+                }
+            }
+        } // tiles
+    } // omp parallel
 }

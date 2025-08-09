@@ -121,13 +121,17 @@ RunResult SparseOnnxModel::applyConv(const ConvAttr& c, const float* src, uint32
     if (posix_memalign(&raw, 64, elems * sizeof(float)) != 0) throw std::bad_alloc();
     float* out = reinterpret_cast<float*>(raw);
 
-    if (c.use_rbm) {
-        // New path: RBM with implicit addressing + optional fused ReLU
-        conv2d_rbm_fmajor_implicit(c, src, B, out);
+    // Heuristic: use tiled-im2col+ELLPACK for large Cout or many patches; fallback to implicit for tiny layers.
+    const uint32_t P = c.H_out * c.W_out;
+    const bool use_tiled = (c.Cout >= 32) || (P >= 128) || (B * P >= 128);
+
+    if (use_tiled) {
+        conv2d_tiled_im2col_fmajor(c, src, B, out);
     } else {
-        // Existing fast path for small Cout/K
+        // your existing implicit kernel (kept for very small shapes)
         if (c.fuse_relu) conv2d_implicit_im2col_fmajor<true >(c, src, B, out);
         else             conv2d_implicit_im2col_fmajor<false>(c, src, B, out);
     }
+
     return { out, c.Cout * c.H_out * c.W_out, /*owned=*/true };
 }
