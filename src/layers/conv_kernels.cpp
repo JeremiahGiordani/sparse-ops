@@ -219,40 +219,92 @@ void conv2d_tiled_im2col_cmajor(
   {
     AlignedBuffer X_tile(size_t(K) * Pt);   // K x Pt
     AlignedBuffer Y_tile(size_t(M) * Pt);   // M x Pt
+    const uint32_t Th = 1;                      // one output row per tile (simple & fast)
+    const uint32_t Tw = std::min<uint32_t>(Wo, 512);
 
     #pragma omp for schedule(static)
     for (uint32_t b = 0; b < B; ++b) {
-      const float* src_b = src + size_t(b) * C * H * W;
-      float*       dst_b = dst + size_t(b) * M * Ho * Wo;
+    const float* src_b = src + size_t(b) * C * H * W;
+    float*       dst_b = dst + size_t(b) * M * Ho * Wo;
 
-      for (uint32_t p0 = 0; p0 < P; p0 += Pt) {
-        const uint32_t plen  = std::min(Pt, P - p0);
-        const uint32_t Ctile = plen; // GEMM columns
+    for (uint32_t ph0 = 0; ph0 < Ho; ph0 += Th) {
+        const uint32_t rows = std::min<uint32_t>(Th, Ho - ph0);
 
-        // 1) Pack K x plen (each column is one patch)
+        for (uint32_t pw0 = 0; pw0 < Wo; pw0 += Tw) {
+        const uint32_t cols  = std::min<uint32_t>(Tw, Wo - pw0);
+        const uint32_t plen  = rows * cols;             // columns in X_tile/Y_tile for this tile
+        const uint32_t Ctile = plen;
+
+        // 1) Pack K x plen (columns enumerate patches in this tile row-major over (ph, pw))
+        //    Column index mapping: t = r*cols + c, where r in [0..rows), c in [0..cols)
         for (uint32_t k = 0; k < K; ++k) {
-          float* xrow = X_tile.ptr + size_t(k) * plen;
-          for (uint32_t t = 0; t < plen; ++t) {
-            const uint32_t p = p0 + t;
-            const size_t offC = c.patch_indices[size_t(p) * K + k];
-            xrow[t] = (offC == c.sentinel_off) ? 0.0f : src_b[offC];
-          }
-        }
+            float* xrow = X_tile.ptr + size_t(k) * plen;
+
+            const auto& km = c.kmap[k]; // {cin, dh, dw}
+
+            for (uint32_t r = 0; r < rows; ++r) {
+            const uint32_t ph = ph0 + r;
+            const int ih = int(ph) * int(c.stride_h) + km.dh;
+
+            // Entire row out of bounds vertically? fill zeros for the whole 'cols'
+            if ((unsigned)ih >= (unsigned)H) {
+                std::memset(xrow + size_t(r) * cols, 0, cols * sizeof(float));
+                continue;
+            }
+
+            // Base input w for the leftmost patch in this tile, for this k
+            const int iw_base = int(pw0) * int(c.stride_w) + km.dw;
+
+            if (c.stride_w == 1) {
+                // Contiguous case: iw increases by 1 across the tile → one memcpy + zero head/tail
+                int left_zeros  = std::max(0, -iw_base);
+                int right_zeros = std::max(0, (iw_base + int(cols)) - int(W));
+                int mid         = int(cols) - left_zeros - right_zeros;
+
+                float* dst_row = xrow + size_t(r) * cols;
+
+                if (left_zeros)  std::memset(dst_row, 0, size_t(left_zeros) * sizeof(float));
+                if (mid > 0) {
+                const uint32_t iw_start = uint32_t(iw_base + left_zeros);
+                const float* src_row = src_b + ( size_t(km.cin) * H + uint32_t(ih) ) * W + iw_start;
+                std::memcpy(dst_row + left_zeros, src_row, size_t(mid) * sizeof(float));
+                }
+                if (right_zeros) std::memset(dst_row + (cols - right_zeros), 0, size_t(right_zeros) * sizeof(float));
+            } else {
+                // Strided case (e.g., sW=2): copy elementwise (rare, small layers)
+                float* dst_row = xrow + size_t(r) * cols;
+                int iw = iw_base;
+                for (uint32_t ccol = 0; ccol < cols; ++ccol, ++iw) {
+                if ((unsigned)iw < (unsigned)W) {
+                    dst_row[ccol] = src_b[( size_t(km.cin) * H + uint32_t(ih) ) * W + uint32_t(iw)];
+                } else {
+                    dst_row[ccol] = 0.0f;
+                }
+                }
+            }
+            } // rows (Th)
+        } // k
 
         // 2) GEMM: (M x K) * (K x Ctile) -> (M x Ctile)
         if (fuse_relu) {
-          ellpack_matmul_fused<true, true>(c.E, X_tile.ptr, Ctile, c.bias_ptr, Y_tile.ptr);
+            ellpack_matmul_fused<true, true>(c.E, X_tile.ptr, Ctile, c.bias_ptr, Y_tile.ptr);
         } else {
-          ellpack_matmul_fused<true, false>(c.E, X_tile.ptr, Ctile, c.bias_ptr, Y_tile.ptr);
+            ellpack_matmul_fused<true, false>(c.E, X_tile.ptr, Ctile, c.bias_ptr, Y_tile.ptr);
         }
 
-        // 3) Store into (C-order) (Cout,Ho,Wo) — contiguous along P dimension
+        // 3) Store back: each (m, r) slice is contiguous over 'cols'
         for (uint32_t m = 0; m < M; ++m) {
-          const float* yrow = Y_tile.ptr + size_t(m) * plen;
-          float* ydst = dst_b + size_t(m) * Ho * Wo + p0;
-          std::memcpy(ydst, yrow, plen * sizeof(float)); // big, contiguous chunk
+            const float* yrow = Y_tile.ptr + size_t(m) * plen;
+            for (uint32_t r = 0; r < rows; ++r) {
+            const uint32_t ph = ph0 + r;
+            float* ydst = dst_b + ( size_t(m) * Ho + ph ) * Wo + pw0;
+            const float* src_row = yrow + size_t(r) * cols;
+            std::memcpy(ydst, src_row, size_t(cols) * sizeof(float));
+            }
         }
-      } // tiles
+
+        } // pw0
+    } // ph0
     } // batch
   } // omp
 }
