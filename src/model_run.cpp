@@ -128,15 +128,13 @@ void SparseOnnxModel::run(
     }
     {
         auto it = buf.find(output_name_);
-        if (it != buf.end()) {
+            if (it != buf.end()) {
             float* final_buf = it->second;
             if (final_buf != output_ptr) {
-                // The internal layout for both MatMul and Conv is already the target Fortran layout.
-                const auto dims = shape_map_.at(output_name_); // e.g., {B,M} or {B,Cout,Hout,Wout}
                 size_t total = 1;
-                for (int d : dims) total *= size_t(d);
+                for (int d : shape_map_.at(output_name_)) total *= size_t(d);
                 std::memcpy(output_ptr, final_buf, total * sizeof(float));
             }
-        }
+            }
     }
 }

@@ -200,36 +200,18 @@ PYBIND11_MODULE(sparseops_backend, m)
              "Load an ONNX model and pre-encode weights to ELLPACK")
         .def("run",
             [](const SparseOnnxModel &model,
-               py::array_t<float, py::array::f_style | py::array::forcecast> X) {
+                py::array_t<float, py::array::c_style | py::array::forcecast> X) {
                 auto buf = X.request();
-                uint32_t n = static_cast<uint32_t>(buf.shape[1]);
-                uint32_t C = static_cast<uint32_t>(buf.shape[0]);
                 const float* input_ptr = static_cast<const float*>(buf.ptr);
 
-                std::vector<size_t> dims = model.output_shape();
-                std::vector<ssize_t> shape(dims.begin(), dims.end());
-
-                // 3) Compute Fortran strides (in bytes)
-                std::vector<ssize_t> strides(shape.size());
-                ssize_t itemsize = sizeof(float);
-                strides[0] = itemsize;
-                for (size_t i = 1; i < shape.size(); ++i) {
-                    strides[i] = strides[i-1] * shape[i-1];
-                }
-
-                // 4) Allocate an f_style array with those strides
-                py::array_t<float, py::array::f_style> Y(
-                    /* shape  = */ shape,
-                    /* strides= */ strides
-                );
+                std::vector<size_t> dims = model.output_shape(); // will be C-order dims
+                py::array_t<float> Y(dims); // C-order by default
                 auto by = Y.request();
 
-                // 5) Run the model into the Fortran buffer
                 model.run(input_ptr,
-                            C,
+                            /*B*/ static_cast<uint32_t>(buf.shape[0]),
                             static_cast<float*>(by.ptr));
-
                 return Y;
             },
-            "Run inference on input X (shape n×C), returns output (m×C)");
+            "Run inference on input X (C-order: NCHW for conv), returns C-order output");
 }

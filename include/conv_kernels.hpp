@@ -19,3 +19,11 @@ void conv2d_tiled_im2col_fmajor(
     uint32_t        B,
     float*          dst    // (B,Cout,H_out,W_out) Fortran
 );
+
+
+void conv2d_tiled_im2col_cmajor(
+    const ConvAttr& c,
+    const float*    src,  // (B,C,H,W), C-order (NCHW)
+    uint32_t        B,
+    float*          dst   // (B,Cout,H_out,W_out), C-order
+);

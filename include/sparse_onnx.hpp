@@ -45,6 +45,8 @@ enum class LayerOp {
   Conv  
 };
 
+enum class DataLayout : uint8_t { BFastFortran, NCHW_C };
+
 // 1) Define each payload type
 struct MatMulAttr {
   Ellpack    E;
@@ -171,6 +173,7 @@ private:
     mutable std::unique_ptr<float[]>   flatten_buf_;   // only for the very first flatten
     mutable bool                       flattened_ = false;
 
+    DataLayout layout_ = DataLayout::NCHW_C;
 
     uint32_t                                      max_rows_;    ///< Max rows (m) across all MatMul layers
     uint32_t                                      output_rows_; ///< Rows of the final (last MatMul) layer

@@ -18,6 +18,22 @@ static inline uint32_t choose_patch_tile(uint32_t K, uint32_t B, uint32_t P) {
     return (uint32_t)Pt;
 }
 
+static inline size_t offNCHW(uint32_t C, uint32_t H, uint32_t W,
+                             uint32_t c, uint32_t h, uint32_t w) {
+  return ( size_t(c) * H + h ) * W + w;
+}
+
+static inline uint32_t choose_tile(uint32_t K, uint32_t P) {
+  // Aim ~256–512 KiB X_tile: K * Pt * 4 bytes
+  size_t target = 512 * 1024;
+  size_t Pt = target / (std::max<size_t>(1, size_t(K)) * sizeof(float));
+  Pt = std::min<size_t>(Pt, P);
+  if (Pt < 64) Pt = std::min<size_t>(P, 64);
+  Pt -= (Pt % 8);
+  if (!Pt) Pt = std::min<size_t>(P, 8);
+  return (uint32_t)Pt;
+}
+
 void conv2d_rbm_fmajor_implicit(
     const ConvAttr&  c,
     const float*     src,    // (B,C,H,W)_F
@@ -182,4 +198,61 @@ void conv2d_tiled_im2col_fmajor(
             }
         } // tiles
     } // omp parallel
+}
+
+
+void conv2d_tiled_im2col_cmajor(
+    const ConvAttr& c,
+    const float*    src,   // (B,C,H,W) C-order
+    uint32_t        B,
+    float*          dst    // (B,Cout,Ho,Wo) C-order
+) {
+  const uint32_t C   = c.Cin,   H  = c.H_in,  W  = c.W_in;
+  const uint32_t M   = c.Cout,  Ho = c.H_out, Wo = c.W_out;
+  const uint32_t K   = c.Cin * c.kH * c.kW;
+  const uint32_t P   = Ho * Wo;
+
+  const uint32_t Pt  = choose_tile(K, P);
+  const bool fuse_relu = c.fuse_relu;
+
+  #pragma omp parallel
+  {
+    AlignedBuffer X_tile(size_t(K) * Pt);   // K x Pt
+    AlignedBuffer Y_tile(size_t(M) * Pt);   // M x Pt
+
+    #pragma omp for schedule(static)
+    for (uint32_t b = 0; b < B; ++b) {
+      const float* src_b = src + size_t(b) * C * H * W;
+      float*       dst_b = dst + size_t(b) * M * Ho * Wo;
+
+      for (uint32_t p0 = 0; p0 < P; p0 += Pt) {
+        const uint32_t plen  = std::min(Pt, P - p0);
+        const uint32_t Ctile = plen; // GEMM columns
+
+        // 1) Pack K x plen (each column is one patch)
+        for (uint32_t k = 0; k < K; ++k) {
+          float* xrow = X_tile.ptr + size_t(k) * plen;
+          for (uint32_t t = 0; t < plen; ++t) {
+            const uint32_t p = p0 + t;
+            const size_t offC = c.patch_indices[size_t(p) * K + k];
+            xrow[t] = (offC == c.sentinel_off) ? 0.0f : src_b[offC];
+          }
+        }
+
+        // 2) GEMM: (M x K) * (K x Ctile) -> (M x Ctile)
+        if (fuse_relu) {
+          ellpack_matmul_fused<true, true>(c.E, X_tile.ptr, Ctile, c.bias_ptr, Y_tile.ptr);
+        } else {
+          ellpack_matmul_fused<true, false>(c.E, X_tile.ptr, Ctile, c.bias_ptr, Y_tile.ptr);
+        }
+
+        // 3) Store into (C-order) (Cout,Ho,Wo) — contiguous along P dimension
+        for (uint32_t m = 0; m < M; ++m) {
+          const float* yrow = Y_tile.ptr + size_t(m) * plen;
+          float* ydst = dst_b + size_t(m) * Ho * Wo + p0;
+          std::memcpy(ydst, yrow, plen * sizeof(float)); // big, contiguous chunk
+        }
+      } // tiles
+    } // batch
+  } // omp
 }
