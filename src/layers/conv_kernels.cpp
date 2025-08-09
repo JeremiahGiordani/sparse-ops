@@ -28,8 +28,11 @@ void conv2d_rbm_fmajor_implicit(
     const uint32_t Wo  = c.W_out;
     const uint32_t K   = c.Cin * c.kH * c.kW;
 
+    const char* env = std::getenv("OMP_NUM_THREADS");
+    int nth       = env ? std::atoi(env) : omp_get_max_threads();
+
     // Parallel over spatial and RBM blocks
-    #pragma omp parallel for collapse(2) schedule(static)
+    #pragma omp parallel for num_threads(nth) schedule(static)
     for (uint32_t ph = 0; ph < Ho; ++ph) {
         for (uint32_t pw = 0; pw < Wo; ++pw) {
 
