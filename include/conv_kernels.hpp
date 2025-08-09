@@ -27,3 +27,10 @@ void conv2d_tiled_im2col_cmajor(
     uint32_t        B,
     float*          dst   // (B,Cout,H_out,W_out), C-order
 );
+
+void conv2d_patchmajor_tiled(
+    const ConvAttr& c,
+    const float*    src_pf,  // PF input
+    uint32_t        B,
+    float*          dst_pf   // PF output
+);

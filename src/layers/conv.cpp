@@ -121,13 +121,15 @@ RunResult SparseOnnxModel::applyConv(const ConvAttr& c, const float* src, uint32
   if (posix_memalign(&raw, 64, elems*sizeof(float)) != 0) throw std::bad_alloc();
   float* out = reinterpret_cast<float*>(raw);
 
-  if (layout_ == DataLayout::NCHW_C) {
-    conv2d_tiled_im2col_cmajor(c, src, B, out);
-  } else {
-    // old path (Fortran/B-fast) remains available if you need it
-    if (c.fuse_relu) conv2d_implicit_im2col_fmajor<true >(c, src, B, out);
-    else             conv2d_implicit_im2col_fmajor<false>(c, src, B, out);
-  }
+  conv2d_patchmajor_tiled(c, src, B, out);
+
+//   if (layout_ == DataLayout::NCHW_C) {
+//     conv2d_tiled_im2col_cmajor(c, src, B, out);
+//   } else {
+//     // old path (Fortran/B-fast) remains available if you need it
+//     if (c.fuse_relu) conv2d_implicit_im2col_fmajor<true >(c, src, B, out);
+//     else             conv2d_implicit_im2col_fmajor<false>(c, src, B, out);
+//   }
 
   return { out, c.Cout * c.H_out * c.W_out, /*owned=*/true };
 }

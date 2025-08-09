@@ -18,9 +18,38 @@ static inline uint32_t choose_patch_tile(uint32_t K, uint32_t B, uint32_t P) {
     return (uint32_t)Pt;
 }
 
+static inline uint32_t choose_Tw(uint32_t Wo, uint32_t /*B*/, uint32_t /*K*/) {
+    // Start with 512 and clamp — good on typical L2 sizes; adjust if needed
+    uint32_t Tw = 512u;
+    if (Tw > Wo) Tw = Wo;
+    if (Tw < 64u) Tw = std::min<uint32_t>(Wo, 64u);
+    // keep it multiple of 8 for nicer tails
+    Tw -= (Tw % 8u);
+    if (Tw == 0u) Tw = std::min<uint32_t>(Wo, 8u);
+    return Tw;
+}
+
 static inline size_t offNCHW(uint32_t C, uint32_t H, uint32_t W,
                              uint32_t c, uint32_t h, uint32_t w) {
   return ( size_t(c) * H + h ) * W + w;
+}
+
+inline void nchw_to_pf(const float* srcNCHW, uint32_t B, uint32_t C, uint32_t H, uint32_t W,
+                       float* dstPF) {
+    // dstPF shape [C, P], P=B*H*W; columns contiguous
+    for (uint32_t c = 0; c < C; ++c) {
+        float* row = dstPF + size_t(c) * (size_t(B)*H*W);
+        for (uint32_t h = 0; h < H; ++h) {
+            for (uint32_t w = 0; w < W; ++w) {
+                const float* src_hw = srcNCHW + ( (size_t(c)*H + h) * W + w ) + 0;
+                float* dst_col = row + ( (size_t(h)*W + w) * B );
+                // copy B values for this (c,h,w) across batch
+                std::memcpy(dst_col, src_hw, B * sizeof(float));
+            }
+        }
+        // Note: srcNCHW pointer must be advanced by B per scalar; if your NCHW is standard,
+        // the B dimension is the leading dimension; adapt indices if needed.
+    }
 }
 
 static inline uint32_t choose_tile(uint32_t K, uint32_t P) {
@@ -307,4 +336,135 @@ void conv2d_tiled_im2col_cmajor(
     } // ph0
     } // batch
   } // omp
+}
+
+
+void conv2d_patchmajor_tiled(
+    const ConvAttr& c,
+    const float*    src_pf,   // [Cin, B*H*W], PF columns contiguous
+    uint32_t        B,
+    float*          dst_pf    // [Cout, B*H_out*W_out], PF
+) {
+    const uint32_t Cin  = c.Cin;
+    const uint32_t Cout = c.Cout;
+    const uint32_t H    = c.H_in;
+    const uint32_t W    = c.W_in;
+    const uint32_t Ho   = c.H_out;
+    const uint32_t Wo   = c.W_out;
+
+    const uint32_t kH   = c.kH;
+    const uint32_t kW   = c.kW;
+    const uint32_t sH   = c.stride_h;
+    const uint32_t sW   = c.stride_w;
+    const uint32_t dH   = c.dil_h;
+    const uint32_t dW   = c.dil_w;
+    const uint32_t padH = c.pad_h;
+    const uint32_t padW = c.pad_w;
+
+    const uint32_t K    = Cin * kH * kW;             // flattened kernel length
+    const uint32_t Pin  = B * H * W;                 // columns in PF input per channel
+    const uint32_t Pout = B * Ho * Wo;               // columns in PF output per channel
+
+    const bool fuse_relu = c.fuse_relu;
+
+    // Choose width tile
+    const uint32_t Tw    = choose_Tw(Wo, B, K);
+    const size_t   maxCtile = size_t(Tw) * B;        // columns per tile (cols * B)
+
+    // Parallel over output tiles (each tile writes a disjoint [cols*B] range)
+    #pragma omp parallel
+    {
+        // Per-thread scratch: X_tile [K × (cols*B)], Y_tile [Cout × (cols*B)]
+        AlignedBuffer X_tile(size_t(K)    * maxCtile);
+        AlignedBuffer Y_tile(size_t(Cout) * maxCtile);
+
+        // Iterate tiles: output row ph0 (Th=1) and width blocks [pw0..pw0+cols)
+        #pragma omp for collapse(2) schedule(static)
+        for (uint32_t ph0 = 0; ph0 < Ho; ++ph0) {
+            for (uint32_t pw0 = 0; pw0 < Wo; pw0 += Tw) {
+                const uint32_t cols   = std::min<uint32_t>(Tw, Wo - pw0);
+                const uint32_t C_tile = cols * B;
+
+                // 1) Pack X_tile: K rows, each has C_tile contiguous columns
+                //    Each k row corresponds to (cin, kh, kw)
+                //    For stride_w==1 we do one big memcpy with head/tail zeros.
+                uint32_t k = 0;
+                for (uint32_t cin = 0; cin < Cin; ++cin) {
+                    // PF row base for this input channel
+                    const float* src_row = src_pf + size_t(cin) * Pin;
+
+                    for (uint32_t kh = 0; kh < kH; ++kh) {
+                        const int ih = int(ph0) * int(sH) + (int(kh) * int(dH) - int(padH));
+
+                        for (uint32_t kw = 0; kw < kW; ++kw, ++k) {
+                            float* xrow = X_tile.ptr + size_t(k) * C_tile;
+
+                            // Vertical OOB → all zeros for this row
+                            if ((unsigned)ih >= (unsigned)H) {
+                                std::memset(xrow, 0, size_t(C_tile) * sizeof(float));
+                                continue;
+                            }
+
+                            const int iw_base = int(pw0) * int(sW) + (int(kw) * int(dW) - int(padW));
+
+                            if (sW == 1) {
+                                // Contiguous across width: columns are [(ph0, pw0 .. pw0+cols-1), all B]
+                                // Head zeros if iw_base < 0, tail zeros if iw_base+cols > W
+                                const int left0  = std::max(0, -iw_base);
+                                const int right0 = std::max(0, (iw_base + int(cols)) - int(W));
+                                const int mid    = int(cols) - left0 - right0;
+
+                                // layout inside xrow: [cols] blocks of size B (each block contiguous)
+                                // Zero left head
+                                if (left0) {
+                                    std::memset(xrow, 0, size_t(left0) * B * sizeof(float));
+                                }
+                                // Mid memcpy
+                                if (mid > 0) {
+                                    const uint32_t iw_start = uint32_t(iw_base + left0);
+                                    const size_t col0 = ( size_t(ih) * W + iw_start ) * B;
+                                    std::memcpy(xrow + size_t(left0) * B,
+                                                src_row + col0,
+                                                size_t(mid) * B * sizeof(float));
+                                }
+                                // Zero right tail
+                                if (right0) {
+                                    std::memset(xrow + size_t(cols - right0) * B,
+                                                0, size_t(right0) * B * sizeof(float));
+                                }
+                            } else {
+                                // Strided width: columns spaced; copy per column block of B
+                                float* dstp = xrow;
+                                int iw = iw_base;
+                                for (uint32_t ccol = 0; ccol < cols; ++ccol, ++iw, dstp += B) {
+                                    if ((unsigned)iw < (unsigned)W) {
+                                        const size_t col0 = ( size_t(ih) * W + uint32_t(iw) ) * B;
+                                        std::memcpy(dstp, src_row + col0, B * sizeof(float));
+                                    } else {
+                                        std::memset(dstp, 0, B * sizeof(float));
+                                    }
+                                }
+                            }
+                        } // kw
+                    } // kh
+                } // cin
+
+                // 2) GEMM via ELLPACK: (Cout × K) * (K × C_tile) = (Cout × C_tile)
+                if (fuse_relu) {
+                    ellpack_matmul_fused<true, true >(c.E, X_tile.ptr, C_tile, c.bias_ptr, Y_tile.ptr);
+                } else {
+                    ellpack_matmul_fused<true, false>(c.E, X_tile.ptr, C_tile, c.bias_ptr, Y_tile.ptr);
+                }
+
+                // 3) Store to PF output: one big memcpy per output channel (row)
+                //    PF row base for output channel m is dst_pf + m * Pout
+                const size_t col_out0 = ( size_t(ph0) * Wo + pw0 ) * B; // starting column in PF
+                for (uint32_t m = 0; m < Cout; ++m) {
+                    float*       dst_row = dst_pf + size_t(m) * Pout + col_out0;
+                    const float* yrow    = Y_tile.ptr + size_t(m) * C_tile;
+                    std::memcpy(dst_row, yrow, size_t(C_tile) * sizeof(float));
+                }
+            } // pw0
+        } // ph0
+    } // omp parallel
 }

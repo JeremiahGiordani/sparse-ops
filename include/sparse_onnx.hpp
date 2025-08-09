@@ -45,7 +45,7 @@ enum class LayerOp {
   Conv  
 };
 
-enum class DataLayout : uint8_t { BFastFortran, NCHW_C };
+enum class DataLayout : uint8_t { BFastFortran, NCHW_C, PatchMajor };
 
 // 1) Define each payload type
 struct MatMulAttr {
