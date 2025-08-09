@@ -35,13 +35,16 @@ static void conv2d_implicit_im2col_fmajor(
     const bool avx512 = supports_avx512();
     const uint32_t V  = avx512 ? 16u : 8u;
 
+    const char* env = std::getenv("OMP_NUM_THREADS");
+    int nth       = env ? std::atoi(env) : omp_get_max_threads();
+
     // Y Fortran index(b,c,ho,wo) = b + B*(c + Cout*(ho + Hout*wo))
     auto y_tile_base = [&](uint32_t co, uint32_t ho, uint32_t wo) -> float* {
         size_t base = size_t(B) * ( co + size_t(Cout) * ( ho + size_t(Hout) * wo ) );
         return Y + base;
     };
 
-    #pragma omp parallel for collapse(2) schedule(static)
+    #pragma omp parallel for num_threads(nth) schedule(static)
     for (uint32_t ho = 0; ho < Hout; ++ho) {
         for (uint32_t wo = 0; wo < Wout; ++wo) {
             for (uint32_t co = 0; co < Cout; ++co) {
