@@ -12,13 +12,9 @@ static inline size_t off4_BCHW(uint32_t B, uint32_t C, uint32_t H,
 
 static inline uint32_t choose_patch_tile(uint32_t K, uint32_t B, uint32_t P) {
     // Target ~64 KiB working set for X_tile = K * (B*P_t) * 4 bytes
-    const size_t target = 64 * 1024;
-    size_t Pt = target / (std::max<size_t>(1, size_t(K) * B) * sizeof(float));
-    if (Pt < 16) Pt = 16;
-    if (Pt > P)  Pt = P;
-    // round down to multiple of 8 to be vector-friendly
-    Pt -= (Pt % 8);
-    if (Pt == 0) Pt = std::min<size_t>(P, 8);
+    size_t target = 512 * 1024;
+    size_t Pt = target / (size_t(K) * B * sizeof(float));
+    Pt = std::clamp<size_t>(Pt - Pt%8, 16, P);
     return (uint32_t)Pt;
 }
 
@@ -150,7 +146,17 @@ void conv2d_tiled_im2col_fmajor(
                         std::memset(dstp, 0, B * sizeof(float));
                     } else {
                         const float* srcp = src + off * B;
-                        std::memcpy(dstp, srcp, B * sizeof(float));
+                        uint32_t rem = B;
+                        float* d = dstp;
+                        const float* s = srcp;
+                        while (rem >= 16) {
+                            _mm512_storeu_ps(d, _mm512_loadu_ps(s));
+                            d += 16; s += 16; rem -= 16;
+                        }
+                        if (rem) {
+                            __mmask16 mask = (__mmask16(1) << rem) - 1;
+                            _mm512_mask_storeu_ps(d, mask, _mm512_maskz_loadu_ps(mask, s));
+                        }
                     }
                 }
             }
