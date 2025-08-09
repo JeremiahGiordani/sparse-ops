@@ -80,6 +80,23 @@ static void parseTensor(
 } // anonymous namespace
 
 SparseOnnxModel::SparseOnnxModel(const std::string &onnx_path) {
+    auto resolve = [this](const std::string& nm) -> std::string {
+        auto it = name_alias_.find(nm);
+        if (it == name_alias_.end()) return nm;
+        // find root
+        std::string root = it->second;
+        while (true) {
+            auto jt = name_alias_.find(root);
+            if (jt == name_alias_.end()) break;
+            root = jt->second;
+        }
+        // path compression
+        if (root != it->second) {
+            // store canonical directly for next time
+            name_alias_[nm] = root;
+        }
+        return root;
+    };
     // 1) Load ONNX model
     onnx::ModelProto model;
     {
@@ -104,7 +121,7 @@ SparseOnnxModel::SparseOnnxModel(const std::string &onnx_path) {
         if (init_map.count(nm)) {
             continue;
         }
-        input_name_ = nm;
+        input_name_ = resolve(nm);
         break;
     }
     if (input_name_.empty()) {
@@ -115,7 +132,7 @@ SparseOnnxModel::SparseOnnxModel(const std::string &onnx_path) {
     if (graph.output_size() != 1) {
         throw std::runtime_error("Expected exactly one graph output");
     }
-    output_name_ = graph.output(0).name();
+    output_name_ = resolve(graph.output(0).name());
 
     // 3) Infer fixed batch_dim_ from first non‐initializer input
     batch_dim_ = 1;
@@ -162,9 +179,9 @@ SparseOnnxModel::SparseOnnxModel(const std::string &onnx_path) {
         const std::string &out = node.output(0);
 
         if (op=="MatMul" || op=="Gemm") {
-            auto itW = init_map.find(node.input(1));
+            auto itW = init_map.find(resolve(node.input(1)));
             if (itW==init_map.end())
-                throw std::runtime_error("Weight '" + node.input(1) + "' not found");
+                throw std::runtime_error("Weight '" + resolve(node.input(1)) + "' not found");
             const onnx::TensorProto* W_tp = itW->second;
 
             std::vector<float> W_raw;
@@ -200,8 +217,8 @@ SparseOnnxModel::SparseOnnxModel(const std::string &onnx_path) {
             }
 
             // If input is output of a Flatten over 4D (B,C,H,W), permute columns once
-            const std::string& mm_input_name = node.input(0);
-            auto fit = flatten_src_shape_.find(mm_input_name);
+            const std::string x_name = resolve(node.input(0));
+            auto fit = flatten_src_shape_.find(x_name);
             if (fit != flatten_src_shape_.end()) {
                 const auto& fsrc = fit->second; // expect {B,C,H,W}
                 if (fsrc.size()==4) {
@@ -222,7 +239,7 @@ SparseOnnxModel::SparseOnnxModel(const std::string &onnx_path) {
             // Bias (Gemm may have it; MatMul typically not)
             std::vector<float> bdata;
             if (op=="Gemm" && node.input_size()>2) {
-                if (auto itB = init_map.find(node.input(2)); itB != init_map.end()) {
+                if (auto itB = init_map.find(resolve(node.input(2))); itB != init_map.end()) {
                     parseTensor(*itB->second, bdata);
                 }
             }
@@ -234,13 +251,13 @@ SparseOnnxModel::SparseOnnxModel(const std::string &onnx_path) {
                 LayerType::MatMul,
                 LayerOp::MatMul,
                 std::move(ma),
-                { node.input(0) },
+                { x_name },
                 { node.output(0) }
             });
 
             // If you’re still doing your earlier bias packing: only push if non-empty
             if (!bdata.empty()) {
-                // … your bias_plans.push_back({ layers_.size()-1, std::move(bdata) });
+                bias_plans.push_back({ layers_.size()-1, std::move(bdata) });
             }
 
             shape_map_[out] = { int(batch_dim_), int(M) };
@@ -249,16 +266,18 @@ SparseOnnxModel::SparseOnnxModel(const std::string &onnx_path) {
 
         // ——— Elementwise Add ———
         if (op=="Add") {
+            const std::string a0 = resolve(node.input(0));
+            const std::string a1 = resolve(node.input(1));
             layers_.push_back({
                 LayerType::Elementwise,
                 LayerOp::Add,
                 AddAttr{},                // no payload
                 /* both inputs to add */
-                { node.input(0), node.input(1) },
+                { a0, a1 },
                 /* single output */
                 { node.output(0) }
             });
-            shape_map_[out] = shape_map_.at(node.input(0));
+            shape_map_[out] = shape_map_.at(a0);
             continue;
         }
 
@@ -267,16 +286,17 @@ SparseOnnxModel::SparseOnnxModel(const std::string &onnx_path) {
             LayerOp lop = (op=="Relu"    ? LayerOp::Relu
                            : op=="Sigmoid"? LayerOp::Sigmoid
                                           : LayerOp::Tanh);
+            const std::string x_name = resolve(node.input(0));
             layers_.push_back({
                 LayerType::Activation,
                 lop,
                 ActAttr{},                // no payload
                 /* activation input */
-                { node.input(0) },
+                { x_name },
                 /* activation output */
                 { node.output(0) }
             });
-            shape_map_[out] = shape_map_.at(node.input(0));
+            shape_map_[out] = shape_map_.at(x_name);
             continue;
         }
 
@@ -302,7 +322,8 @@ SparseOnnxModel::SparseOnnxModel(const std::string &onnx_path) {
                 // NOTE: ignoring dilations/ceil_mode; can add if you need
             }
 
-            const auto in_shape = shape_map_.at(node.input(0)); // expect {B,C,H,W}
+            const std::string x_name = resolve(node.input(0));
+            const auto in_shape = shape_map_.at(x_name); // expect {B,C,H,W}
             if (in_shape.size() != 4) throw std::runtime_error("Pool input must be 4D");
             const int B  = in_shape[0];
             p.C = (uint32_t)in_shape[1];
@@ -322,7 +343,7 @@ SparseOnnxModel::SparseOnnxModel(const std::string &onnx_path) {
                 LayerType::Pool,
                 (op=="MaxPool" ? LayerOp::MaxPool : LayerOp::GlobalAveragePool),
                 std::move(p),
-                { node.input(0) },
+                { x_name },
                 { node.output(0) }
             });
             continue;
@@ -334,15 +355,17 @@ SparseOnnxModel::SparseOnnxModel(const std::string &onnx_path) {
             for (auto &a : node.attribute()) {
                 if (a.name()=="axis") { axis = static_cast<int>(a.i()); break; }
             }
+            const std::string x_name = resolve(node.input(0));
+            
             layers_.push_back({
                 LayerType::Reshape,
                 LayerOp::Flatten,
                 FlattenAttr{axis},
-                { node.input(0) },
+                { x_name },
                 { node.output(0) }
             });
 
-            auto in_shape = shape_map_.at(node.input(0));  // expect {B,C,H,W}
+            auto in_shape = shape_map_.at(x_name);  // expect {B,C,H,W}
             // Remember the *input* shape so FC can realign its columns
             flatten_src_shape_[ node.output(0) ] = in_shape;
 
@@ -356,7 +379,7 @@ SparseOnnxModel::SparseOnnxModel(const std::string &onnx_path) {
 
         if (op == "Conv") {
             // 1) Load raw kernel (Cout, Cin, kH, kW)
-            auto itW = init_map.find(node.input(1));
+            auto itW = init_map.find(resolve(node.input(1)));
             if (itW == init_map.end()) throw std::runtime_error("Conv weight initializer not found");
             const onnx::TensorProto* W_tp = itW->second;
 
@@ -393,7 +416,7 @@ SparseOnnxModel::SparseOnnxModel(const std::string &onnx_path) {
             if (group != 1) throw std::runtime_error("Grouped conv not supported (yet)");
 
             // 5) Input geometry
-            const auto in_shape = shape_map_.at(node.input(0)); // {B, Cin, H_in, W_in}
+            const auto in_shape = shape_map_.at(resolve(node.input(0))); // {B, Cin, H_in, W_in}
             if (in_shape.size() != 4) throw std::runtime_error("Conv input must be 4D");
             const uint32_t B    = static_cast<uint32_t>(in_shape[0]);
             const uint32_t Cin_ = static_cast<uint32_t>(in_shape[1]);
@@ -408,7 +431,7 @@ SparseOnnxModel::SparseOnnxModel(const std::string &onnx_path) {
             // 7) Optional bias
             std::vector<float> bias_vec;
             if (node.input_size() > 2) {
-                if (auto itB = init_map.find(node.input(2)); itB != init_map.end()) {
+                if (auto itB = init_map.find(resolve(node.input(2))); itB != init_map.end()) {
                     parseTensor(*itB->second, bias_vec);
                 }
             }
@@ -451,11 +474,12 @@ SparseOnnxModel::SparseOnnxModel(const std::string &onnx_path) {
             };
 
             // 10) Push layer + record output shape ({B, Cout, H_out, W_out})
+            const std::string x_name = resolve(node.input(0));
             layers_.push_back({
                 LayerType::Conv,
                 LayerOp::Conv,
                 std::move(cattr),
-                { node.input(0) },
+                { x_name },
                 { node.output(0) }
             });
             shape_map_[ node.output(0) ] = { int(B), Cout, int(H_out), int(W_out) };
@@ -465,6 +489,20 @@ SparseOnnxModel::SparseOnnxModel(const std::string &onnx_path) {
                 bias_plans.push_back({ layers_.size() - 1, std::move(bias_vec) });
             }
             continue;
+        }
+
+        if (op == "Identity") {
+            const std::string in  = resolve(node.input(0));
+            const std::string out = node.output(0);
+
+            // Record alias and propagate shape immediately
+            name_alias_[out] = in;
+            // shape of 'out' is same as 'in'
+            auto it = shape_map_.find(in);
+            if (it != shape_map_.end()) {
+                shape_map_[out] = it->second;
+            }
+            continue; // do not emit a Layer
         }
 
 

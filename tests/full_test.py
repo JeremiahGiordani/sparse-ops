@@ -21,13 +21,13 @@ def average_runtime(fn, n=50):
 class CNNBothPoolsAdd(nn.Module):
     def __init__(self, in_channels=3, c1=16, c2=16, fc_out=12):
         super().__init__()
-        self.conv1 = nn.Conv2d(in_channels, c1, kernel_size=3, padding=1, bias=False)
+        self.conv1 = nn.Conv2d(in_channels, c1, kernel_size=3, padding=1)
         self.pool  = nn.MaxPool2d(kernel_size=2, stride=2)
-        self.conv2 = nn.Conv2d(c1, c2, kernel_size=3, padding=1, bias=False)
-        self.skip  = nn.Conv2d(c1, c2, kernel_size=1, bias=False)   # shape-match for Add
+        self.conv2 = nn.Conv2d(c1, c2, kernel_size=3, padding=1)
+        self.skip  = nn.Conv2d(c1, c2, kernel_size=1)   # shape-match for Add
         self.gap   = nn.AdaptiveAvgPool2d((1, 1))                   # → GlobalAveragePool
         self.flatten = nn.Flatten()
-        self.fc    = nn.Linear(c2, fc_out, bias=False)
+        self.fc    = nn.Linear(c2, fc_out)
 
     def forward(self, x):
         x = F.relu(self.conv1(x))

@@ -169,6 +169,7 @@ private:
     std::string                                   input_name_;
     std::string                                   output_name_;
     std::unordered_map<std::string, std::vector<int>> flatten_src_shape_;
+    std::unordered_map<std::string, std::string> name_alias_;
     // per‐op helpers, return a freshly‐allocated buffer of shape [rows×C]
     RunResult applyMatMul            (const MatMulAttr&   , const float* src, uint32_t B, float* out_buf = nullptr) const;
     RunResult applyAdd               (const AddAttr&      , const float* in_A, const float* in_B, uint32_t features, uint32_t B, float* out_buf = nullptr) const;
