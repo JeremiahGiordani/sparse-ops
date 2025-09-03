@@ -2,7 +2,7 @@
 
 A high-performance CPU backend for sparse **matrix–matrix** and **matrix–vector** operations, plus **Sparse ONNX model inference** using the ELLPACK format.
 
-These kernels currently outperform both MKL Sparse and OpenBLAS Dense on key benchmarks, and the Python API outperforms `torch.matmul` and `numpy.matmul` on compatible workloads. [See full performance results →](docs/performance.md)
+These kernels achieve strong performance across many matrix shapes, often surpassing both MKL Sparse and OpenBLAS Dense on representative benchmarks. In addition, the Python API can outperform `torch.matmul` and `numpy.matmul` on compatible workloads. The integrated model-execution feature has also shown speedups over ONNX and Torch for certain cases, particularly models dominated by large fully connected layers. [See full performance results →](docs/performance.md)
 
 
 ---
